@@ -1,5 +1,6 @@
-pub(crate) mod index;
+pub mod index;
 
+use bimap::BiHashMap;
 use ordered_float::OrderedFloat;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
@@ -9,28 +10,42 @@ use index::Index;
 use roaring::RoaringBitmap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum FieldValue {
+pub enum FieldValue {
     String(String),
     Numeric(OrderedFloat<f64>),
 }
 
 impl FieldValue {
-    fn string(value: String) -> FieldValue {
+    pub fn string(value: String) -> FieldValue {
         FieldValue::String(value)
     }
 
-    fn numeric(value: f64) -> FieldValue {
+    pub fn numeric(value: f64) -> FieldValue {
         FieldValue::Numeric(OrderedFloat(value))
     }
 
-    fn get_numeric(&self) -> Option<&OrderedFloat<f64>> {
+    fn as_numeric(&self) -> Option<&OrderedFloat<f64>> {
         match self {
             FieldValue::String(_) => None,
             FieldValue::Numeric(value) => Some(value),
         }
     }
 
-    fn get_string(&self) -> Option<&String> {
+    fn get_numeric(self) -> Option<OrderedFloat<f64>> {
+        match self {
+            FieldValue::String(_) => None,
+            FieldValue::Numeric(value) => Some(value),
+        }
+    }
+
+    fn as_string(&self) -> Option<&String> {
+        match self {
+            FieldValue::String(value) => Some(value),
+            FieldValue::Numeric(_) => None,
+        }
+    }
+
+    fn get_string(self) -> Option<String> {
         match self {
             FieldValue::String(value) => Some(value),
             FieldValue::Numeric(_) => None,
@@ -47,59 +62,59 @@ impl Display for FieldValue {
     }
 }
 
-type DataItemId = usize;
+pub type DataItemId = usize;
 
 #[derive(Debug)]
-enum CompositeFilter {
+pub enum CompositeFilter {
     And(Vec<CompositeFilter>),
     Or(Vec<CompositeFilter>),
     Single(Filter),
 }
 
 impl CompositeFilter {
-    fn eq(name: &str, value: FieldValue) -> Self {
+    pub fn eq(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::Eq(value),
         })
     }
 
-    fn between(name: &str, first: FieldValue, second: FieldValue) -> Self {
+    pub fn between(name: &str, first: FieldValue, second: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::Between(first, second),
         })
     }
 
-    fn gt(name: &str, value: FieldValue) -> Self {
+    pub fn gt(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::GreaterThan(value),
         })
     }
 
-    fn ge(name: &str, value: FieldValue) -> Self {
+    pub fn ge(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::GreaterOrEqual(value),
         })
     }
 
-    fn lt(name: &str, value: FieldValue) -> Self {
+    pub fn lt(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::LessThan(value),
         })
     }
 
-    fn le(name: &str, value: FieldValue) -> Self {
+    pub fn le(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
             operation: FilterOperation::LessThanOrEqual(value),
         })
     }
 
-    fn apply(&self, indices: &HashMap<String, Index>) -> Option<FilterResult> {
+    fn apply(&self, indices: &QueryIndices) -> Option<FilterResult> {
         match self {
             CompositeFilter::And(filters) => filters.iter().fold(None, |acc, filter| {
                 let filter_result = filter.apply(indices);
@@ -130,7 +145,7 @@ where
 }
 
 #[derive(Debug)]
-struct Filter {
+pub struct Filter {
     name: String,
     operation: FilterOperation,
 }
@@ -162,38 +177,31 @@ impl FilterResult {
             hits: self.hits | another.hits,
         }
     }
-
-    fn read_matches(&self) -> Vec<u32> {
-        self.hits.iter().collect()
-    }
 }
 
-struct EntityStorage<T> {
+pub struct EntityStorage<T> {
     /// Indices available associated by data's field name
     indices: HashMap<String, Index>,
 
     /// Mapping between position of a data item in the index and its ID
-    position_to_id: HashMap<u32, DataItemId>,
-
-    /// Mapping between position of a data item in the index and its ID
-    id_to_position: HashMap<DataItemId, u32>,
+    position_id: BiHashMap<u32, DataItemId>,
 
     /// Data available in the storage associated by the ID
     data: HashMap<DataItemId, T>,
 }
 
 impl<T: Indexable> EntityStorage<T> {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
-    fn attach<I: IntoIterator<Item = T>>(&mut self, data: I) {
+    pub fn attach<I: IntoIterator<Item = T>>(&mut self, data: I) {
         for item in data {
             self.data.insert(item.id(), item);
         }
     }
 
-    fn index(&mut self) {
+    pub fn index(&mut self) {
         for (position, (id, item)) in self.data.iter().enumerate() {
             let position = position as u32;
 
@@ -208,17 +216,16 @@ impl<T: Indexable> EntityStorage<T> {
             }
 
             // Associate index position to the field ID
-            self.position_to_id.insert(position, *id);
-            self.id_to_position.insert(*id, position);
+            self.position_id.insert(position, *id);
         }
     }
 
     fn get_id_by_position(&self, position: &u32) -> Option<&DataItemId> {
-        self.position_to_id.get(position)
+        self.position_id.get_by_left(position)
     }
 
     fn get_position_by_id(&self, id: &DataItemId) -> Option<&u32> {
-        self.id_to_position.get(id)
+        self.position_id.get_by_right(id)
     }
 }
 
@@ -226,8 +233,7 @@ impl<T> Default for EntityStorage<T> {
     fn default() -> Self {
         EntityStorage {
             indices: Default::default(),
-            position_to_id: Default::default(),
-            id_to_position: Default::default(),
+            position_id: Default::default(),
             data: Default::default(),
         }
     }
@@ -240,7 +246,7 @@ struct DeltaScope {
 }
 
 // TODO: Build before and after value in the engine?
-struct DeltaChange {
+pub struct DeltaChange {
     scope: DeltaScope,
     before: Option<FieldValue>,
     after: Option<FieldValue>,
@@ -266,37 +272,37 @@ impl DeltaChange {
     }
 }
 
-trait Delta {
+pub trait Delta {
     type Value;
 
-    fn change(&self) -> &DeltaChange;
+    fn change(&self) -> DeltaChange;
 
     fn apply_data(&self, value: &mut Self::Value);
 }
 
 type BoxedDelta<T> = Box<dyn Delta<Value = T>>;
 
-struct Pagination {
+pub struct Pagination {
     start: usize,
     size: usize,
 }
 
 impl Pagination {
-    fn new(start: usize, size: usize) -> Self {
+    pub fn new(start: usize, size: usize) -> Self {
         Pagination { start, size }
     }
 }
 
-struct Sort {
+pub struct Sort {
     by: String,
 }
 
 impl Sort {
-    fn new(by: String) -> Self {
+    pub fn new(by: String) -> Self {
         Sort { by }
     }
 
-    fn apply(&self, items: &RoaringBitmap, indices: &HashMap<String, Index>) -> Vec<u32> {
+    fn apply(&self, items: &RoaringBitmap, indices: &QueryIndices) -> Vec<u32> {
         let index = indices
             .get(&self.by)
             .expect("Sort by criteria does not have an index.");
@@ -305,14 +311,62 @@ impl Sort {
     }
 }
 
-struct QueryExecution {
+struct QueryIndices<'a> {
+    stored: &'a HashMap<String, Index>,
+    affected: HashSet<DataItemId>,
+    deltas: HashMap<String, Index>,
+}
+
+impl<'a> QueryIndices<'a> {
+    fn new(stored: &'a HashMap<String, Index>) -> Self {
+        QueryIndices {
+            stored,
+            affected: HashSet::new(),
+            deltas: HashMap::new(),
+        }
+    }
+
+    fn attach_deltas<T>(mut self, deltas: &[BoxedDelta<T>], storage: &EntityStorage<T>) -> Self
+    where
+        T: Indexable,
+    {
+        for delta in deltas {
+            let change = delta.change();
+
+            if let Some(current) = self.stored.get(&change.scope.field_name) {
+                if let Some(position) = storage.get_position_by_id(&change.scope.id) {
+                    // TODO: it's a bit sad that we need to clone the whole index to mutate only single positions.
+                    let mut dynamic = current.clone();
+
+                    if let Some(before) = change.before.as_ref() {
+                        dynamic.remove(before, *position);
+                    }
+
+                    if let Some(after) = change.after {
+                        dynamic.put(after, *position);
+                    }
+
+                    self.deltas.insert(change.scope.field_name, dynamic);
+                    self.affected.insert(change.scope.id);
+                }
+            }
+        }
+        self
+    }
+
+    fn get(&self, name: &String) -> Option<&Index> {
+        self.deltas.get(name).or_else(|| self.stored.get(name))
+    }
+}
+
+pub struct QueryExecution {
     filter: CompositeFilter,
     sort: Option<Sort>,
     pagination: Option<Pagination>,
 }
 
 impl QueryExecution {
-    fn new(filter: CompositeFilter) -> Self {
+    pub fn new(filter: CompositeFilter) -> Self {
         QueryExecution {
             filter,
             pagination: None,
@@ -320,21 +374,21 @@ impl QueryExecution {
         }
     }
 
-    fn with_sort(mut self, sort: Sort) -> Self {
+    pub fn with_sort(mut self, sort: Sort) -> Self {
         self.sort = Some(sort);
         self
     }
 
-    fn with_pagination(mut self, pagination: Pagination) -> Self {
+    pub fn with_pagination(mut self, pagination: Pagination) -> Self {
         self.pagination = Some(pagination);
         self
     }
 
-    fn run<T>(self, storage: &EntityStorage<T>, deltas: &[BoxedDelta<T>]) -> Vec<T>
+    pub fn run<T>(self, storage: &EntityStorage<T>, deltas: &[BoxedDelta<T>]) -> Vec<T>
     where
         T: Indexable + Clone,
     {
-        let indices = QueryExecution::read_indices(storage, deltas);
+        let indices = QueryIndices::new(&storage.indices).attach_deltas(deltas, storage);
 
         let filter_result = self.filter.apply(&indices).unwrap();
         let item_ids = self.read_positions(filter_result, &indices, storage);
@@ -342,34 +396,10 @@ impl QueryExecution {
         QueryExecution::read_data(&item_ids, storage, deltas)
     }
 
-    fn read_indices<T>(
-        storage: &EntityStorage<T>,
-        deltas: &[BoxedDelta<T>],
-    ) -> HashMap<String, Index>
-    where
-        T: Indexable,
-    {
-        let mut indices = storage.indices.clone();
-
-        for delta in deltas {
-            let change = delta.change();
-
-            let index = indices.get_mut(&change.scope.field_name);
-            let position = storage.get_position_by_id(&change.scope.id);
-
-            match (index, position) {
-                (Some(index), Some(position)) => index.apply_change(*position, delta.change()),
-                _ => continue,
-            }
-        }
-
-        indices
-    }
-
     fn read_positions<T>(
         &self,
         filter_result: FilterResult,
-        indices: &HashMap<String, Index>,
+        indices: &QueryIndices,
         storage: &EntityStorage<T>,
     ) -> HashSet<DataItemId>
     where
@@ -428,20 +458,20 @@ impl QueryExecution {
     }
 }
 
-struct Engine<T> {
+pub struct Engine<T> {
     storage: EntityStorage<T>,
     deltas: Vec<BoxedDelta<T>>,
 }
 
 impl<T> Engine<T> {
-    fn new(storage: EntityStorage<T>) -> Self {
+    pub fn new(storage: EntityStorage<T>) -> Self {
         Engine {
             storage,
             deltas: Vec::new(),
         }
     }
 
-    fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
+    pub fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
     where
         D: Delta<Value = T> + 'static,
     {
@@ -453,7 +483,7 @@ impl<T> Engine<T> {
 }
 
 impl<T: Indexable + Clone> Engine<T> {
-    fn query(&self, execution: QueryExecution) -> Vec<T> {
+    pub fn query(&self, execution: QueryExecution) -> Vec<T> {
         execution.run(&self.storage, &self.deltas)
     }
 }
@@ -513,24 +543,23 @@ mod tests {
     }
 
     struct DecreaseScoreDelta {
-        change: DeltaChange,
+        id: DataItemId,
+        score: f64,
     }
 
     impl DecreaseScoreDelta {
         fn new(id: DataItemId, score: f64) -> Self {
-            DecreaseScoreDelta {
-                change: DeltaChange::new(id, "score".to_string())
-                    .before(FieldValue::numeric(score))
-                    .after(FieldValue::numeric(score - 1.0)),
-            }
+            DecreaseScoreDelta { id, score }
         }
     }
 
     impl Delta for DecreaseScoreDelta {
         type Value = Player;
 
-        fn change(&self) -> &DeltaChange {
-            &self.change
+        fn change(&self) -> DeltaChange {
+            DeltaChange::new(self.id, "score".to_string())
+                .before(FieldValue::numeric(self.score))
+                .after(FieldValue::numeric(self.score - 1.0))
         }
 
         fn apply_data(&self, value: &mut Self::Value) {
@@ -539,16 +568,16 @@ mod tests {
     }
 
     struct SwitchSportsDelta {
-        change: DeltaChange,
+        id: DataItemId,
+        current: Sport,
         new_sport: Sport,
     }
 
     impl SwitchSportsDelta {
-        fn new(id: DataItemId, before: Sport, new_sport: Sport) -> Self {
+        fn new(id: DataItemId, current: Sport, new_sport: Sport) -> Self {
             SwitchSportsDelta {
-                change: DeltaChange::new(id, "sport".to_string())
-                    .before(FieldValue::string(before.as_string()))
-                    .after(FieldValue::string(new_sport.as_string())),
+                id,
+                current,
                 new_sport,
             }
         }
@@ -557,8 +586,10 @@ mod tests {
     impl Delta for SwitchSportsDelta {
         type Value = Player;
 
-        fn change(&self) -> &DeltaChange {
-            &self.change
+        fn change(&self) -> DeltaChange {
+            DeltaChange::new(self.id, "sport".to_string())
+                .before(FieldValue::string(self.current.as_string()))
+                .after(FieldValue::string(self.new_sport.as_string()))
         }
 
         fn apply_data(&self, value: &mut Self::Value) {
@@ -594,10 +625,7 @@ mod tests {
     }
 
     fn create_random_players(count: usize) -> Vec<Player> {
-        (0..count)
-            .into_iter()
-            .map(create_player_from_index)
-            .collect()
+        (0..count).map(create_player_from_index).collect()
     }
 
     fn create_player_from_index(index: usize) -> Player {

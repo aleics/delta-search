@@ -16,3 +16,7 @@ Cargo.lock
 # Editors
 .idea
 .vscode
+
+# Bench
+flamegraph*
+perf*

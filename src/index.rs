@@ -1,4 +1,4 @@
-use crate::{DataItemId, DeltaChange, FieldValue, FilterOperation, FilterResult};
+use crate::{DataItemId, FieldValue, FilterOperation, FilterResult};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::RoaringBitmap;
@@ -6,20 +6,20 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
 use time::OffsetDateTime;
 
-pub(crate) trait Indexable {
+pub trait Indexable {
     fn id(&self) -> DataItemId;
 
     fn index_values(&self) -> Vec<IndexableValue>;
 }
 
-pub(crate) struct IndexableValue {
+pub struct IndexableValue {
     pub(crate) name: String,
     pub(crate) value: FieldValue,
     pub(crate) descriptor: TypeDescriptor,
 }
 
 impl IndexableValue {
-    pub(crate) fn string(name: String, value: String) -> Self {
+    pub fn string(name: String, value: String) -> Self {
         IndexableValue {
             name,
             value: FieldValue::string(value),
@@ -27,7 +27,7 @@ impl IndexableValue {
         }
     }
 
-    pub(crate) fn numeric(name: String, value: f64) -> Self {
+    pub fn numeric(name: String, value: f64) -> Self {
         IndexableValue {
             name,
             value: FieldValue::numeric(value),
@@ -35,7 +35,7 @@ impl IndexableValue {
         }
     }
 
-    pub(crate) fn enumerate(name: String, value: String, possibilities: HashSet<String>) -> Self {
+    pub fn enumerate(name: String, value: String, possibilities: HashSet<String>) -> Self {
         if !possibilities.contains(&value) {
             panic!(
                 "Invalid enumerate index for \"{}\". Value \"{}\" not found in possibilities \"{:?}\"",
@@ -74,7 +74,9 @@ impl Index {
             TypeDescriptor::String => Index::String(StringIndex::new()),
             TypeDescriptor::Numeric => Index::Numeric(NumericIndex::new()),
             TypeDescriptor::Date => Index::Date(DateIndex::new()),
-            TypeDescriptor::Enum(names) => Index::Enum(EnumIndex::new(names.clone())),
+            TypeDescriptor::Enum(names) => {
+                Index::Enum(EnumIndex::new(IndexSet::from_iter(names.clone())))
+            }
         }
     }
 
@@ -107,12 +109,21 @@ impl Index {
         }
     }
 
-    pub(crate) fn apply_change(&mut self, position: u32, change: &DeltaChange) {
+    pub(crate) fn put(&mut self, value: FieldValue, position: u32) {
         match self {
-            Index::String(index) => index.apply_change(position, change),
-            Index::Numeric(index) => index.apply_change(position, change),
-            Index::Date(_) => {}
-            Index::Enum(index) => index.apply_change(position, change),
+            Index::String(index) => index.put(value, position),
+            Index::Numeric(index) => index.put(value, position),
+            Index::Date(_) => todo!(),
+            Index::Enum(index) => index.put(value, position),
+        }
+    }
+
+    pub(crate) fn remove(&mut self, value: &FieldValue, position: u32) {
+        match self {
+            Index::String(index) => index.remove(value, position),
+            Index::Numeric(index) => index.remove(value, position),
+            Index::Date(_) => todo!(),
+            Index::Enum(index) => index.remove(value, position),
         }
     }
 }
@@ -130,7 +141,6 @@ impl StringIndex {
     fn append(&mut self, value: FieldValue, position: u32) {
         let string_value = value
             .get_string()
-            .cloned()
             .expect("String index only supports appending string values.");
 
         self.inner.put(string_value, position);
@@ -145,40 +155,26 @@ impl StringIndex {
 
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
         let string_value = value
-            .get_string()
+            .as_string()
             .expect("Invalid value for \"equal\" filter. Expected string value.");
 
         self.inner.0.get(string_value).cloned()
     }
 
-    fn apply_change(&mut self, position: u32, change: &DeltaChange) {
-        let before_bitmap = change
-            .before
-            .as_ref()
-            .map(|before| {
-                before
-                    .get_string()
-                    .expect("Invalid delta value for StringIndex. Expected string value.")
-            })
-            .and_then(|before| self.inner.0.get_mut(before));
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .get_string()
+            .expect("String index only allows to insert string values.");
 
-        if let Some(before_bitmap) = before_bitmap {
-            before_bitmap.remove(position);
-        }
+        self.inner.put(value, position);
+    }
 
-        let after_bitmap = change
-            .after
-            .as_ref()
-            .map(|after| {
-                after
-                    .get_string()
-                    .expect("Invalid delta value for StringIndex. Expected string value.")
-            })
-            .and_then(|after| self.inner.0.get_mut(after));
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
+            .as_string()
+            .expect("String index only allows to remove string values.");
 
-        if let Some(after_bitmap) = after_bitmap {
-            after_bitmap.insert(position);
-        }
+        self.inner.remove(value, position);
     }
 }
 
@@ -194,7 +190,7 @@ impl NumericIndex {
 
     fn append(&mut self, value: FieldValue, position: u32) {
         let numeric_value = value
-            .get_numeric()
+            .as_numeric()
             .copied()
             .expect("Numeric index only supports appending numeric values.");
 
@@ -224,7 +220,7 @@ impl NumericIndex {
 
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
         let numeric_value = value
-            .get_numeric()
+            .as_numeric()
             .copied()
             .expect("Invalid value for \"equal\" filter. Expected numeric value.");
 
@@ -238,13 +234,13 @@ impl NumericIndex {
     ) -> Option<RoaringBitmap> {
         let first_bound = first.map(|value| {
             value
-                .get_numeric()
+                .as_numeric()
                 .expect("Invalid \"between\" filter value. Expected numeric value.")
         });
 
         let second_bound = second.map(|value| {
             value
-                .get_numeric()
+                .as_numeric()
                 .expect("Invalid \"between\" filter value. Expected numeric value.")
         });
 
@@ -260,34 +256,20 @@ impl NumericIndex {
         }
     }
 
-    fn apply_change(&mut self, position: u32, change: &DeltaChange) {
-        let before_bitmap = change
-            .before
-            .as_ref()
-            .map(|before| {
-                before
-                    .get_numeric()
-                    .expect("Invalid delta value for NumericIndex. Expected numeric value.")
-            })
-            .and_then(|before| self.inner.0.get_mut(before));
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .get_numeric()
+            .expect("Numeric index only allows to insert numeric values.");
 
-        if let Some(before_bitmap) = before_bitmap {
-            before_bitmap.remove(position);
-        }
+        self.inner.put(value, position);
+    }
 
-        let after_bitmap = change
-            .after
-            .as_ref()
-            .map(|after| {
-                after
-                    .get_numeric()
-                    .expect("Invalid delta value for NumericIndex. Expected numeric value.")
-            })
-            .and_then(|after| self.inner.0.get_mut(after));
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
+            .as_numeric()
+            .expect("Numeric index only allows to remove numeric values.");
 
-        if let Some(after_bitmap) = after_bitmap {
-            after_bitmap.insert(position);
-        }
+        self.inner.remove(value, position);
     }
 }
 
@@ -314,16 +296,16 @@ pub(crate) struct EnumIndex {
 }
 
 impl EnumIndex {
-    fn new(names: HashSet<String>) -> Self {
+    fn new(values: IndexSet<String>) -> Self {
         EnumIndex {
-            values: IndexSet::from_iter(names),
+            values,
             inner: SortableIndex::default(),
         }
     }
 
     fn append(&mut self, value: FieldValue, position: u32) {
         let string_value = value
-            .get_string()
+            .as_string()
             .expect("Enum index only supports appending string values.");
 
         if let Some(index) = self.values.get_index_of(string_value) {
@@ -340,43 +322,37 @@ impl EnumIndex {
 
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
         let string_value = value
-            .get_string()
+            .as_string()
             .expect("Enum index only supports string values for \"equal\" filter.");
 
         let index = self.values.get_index_of(string_value)?;
         self.inner.0.get(&index).cloned()
     }
 
-    fn apply_change(&mut self, position: u32, change: &DeltaChange) {
-        let before_bitmap = change
-            .before
-            .as_ref()
-            .map(|before| {
-                before
-                    .get_string()
-                    .expect("Invalid delta value in EnumIndex. Expected string value.")
-            })
-            .and_then(|before| self.values.get_index_of(before))
-            .and_then(|before_index| self.inner.0.get_mut(&before_index));
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .as_string()
+            .expect("Enum index only allows to insert string values.");
 
-        if let Some(before_bitmap) = before_bitmap {
-            before_bitmap.remove(position);
-        }
+        let index = self
+            .values
+            .get_index_of(value)
+            .expect("Enum index does not know value to be inserted.");
 
-        let after_bitmap = change
-            .after
-            .as_ref()
-            .map(|after| {
-                after
-                    .get_string()
-                    .expect("Invalid delta value in EnumIndex. Expected string value.")
-            })
-            .and_then(|after| self.values.get_index_of(after))
-            .and_then(|after_index| self.inner.0.get_mut(&after_index));
+        self.inner.put(index, position);
+    }
 
-        if let Some(after_bitmap) = after_bitmap {
-            after_bitmap.insert(position);
-        }
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
+            .as_string()
+            .expect("Enum index only allows to remove string values.");
+
+        let index = self
+            .values
+            .get_index_of(value)
+            .expect("Enum index does not know value to be removed.");
+
+        self.inner.remove(&index, position);
     }
 }
 
@@ -407,5 +383,11 @@ impl<T: Ord> SortableIndex<T> {
     fn put(&mut self, key: T, position: u32) {
         let bitmap = self.0.entry(key).or_default();
         bitmap.insert(position);
+    }
+
+    fn remove(&mut self, key: &T, position: u32) {
+        if let Some(bitmap) = self.0.get_mut(key) {
+            bitmap.remove(position);
+        }
     }
 }
