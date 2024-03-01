@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 bimap = "0.6.3"
-indexmap = "2.2.2"
+indexmap = "2.2.5"
 ordered-float = "4.0"
-roaring = "0.10.2"
+roaring = "0.10.3"
 time = "0.3.34"
 
 [dev-dependencies]

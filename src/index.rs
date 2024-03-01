@@ -60,6 +60,40 @@ pub(crate) enum TypeDescriptor {
     Enum(HashSet<String>),
 }
 
+trait FilterableIndex {
+    fn filter(&self, op: &FilterOperation) -> FilterResult {
+        let hits = match op {
+            FilterOperation::Eq(value) => self.equal(value),
+            FilterOperation::Between(first, second) => {
+                self.between(Bound::Included(first), Bound::Included(second))
+            }
+            FilterOperation::GreaterThan(value) => {
+                self.between(Bound::Excluded(value), Bound::Unbounded)
+            }
+            FilterOperation::GreaterOrEqual(value) => {
+                self.between(Bound::Included(value), Bound::Unbounded)
+            }
+            FilterOperation::LessThan(value) => {
+                self.between(Bound::Unbounded, Bound::Excluded(value))
+            }
+            FilterOperation::LessThanOrEqual(value) => {
+                self.between(Bound::Unbounded, Bound::Included(value))
+            }
+        };
+
+        hits.map(FilterResult::new)
+            .unwrap_or_else(FilterResult::empty)
+    }
+
+    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap>;
+
+    fn between(
+        &self,
+        first: Bound<&FieldValue>,
+        second: Bound<&FieldValue>,
+    ) -> Option<RoaringBitmap>;
+}
+
 #[derive(Clone)]
 pub(crate) enum Index {
     String(StringIndex),
@@ -80,24 +114,13 @@ impl Index {
         }
     }
 
-    pub(crate) fn append(&mut self, value: FieldValue, position: u32) {
+    pub(crate) fn filter(&self, op: &FilterOperation) -> FilterResult {
         match self {
-            Index::String(index) => index.append(value, position),
-            Index::Numeric(index) => index.append(value, position),
-            Index::Date(_) => {}
-            Index::Enum(index) => index.append(value, position),
-        }
-    }
-
-    pub(crate) fn filter(&self, op: &FilterOperation) -> Option<FilterResult> {
-        let hits = match self {
             Index::String(index) => index.filter(op),
             Index::Numeric(index) => index.filter(op),
-            Index::Date(_) => None,
+            Index::Date(_) =>  todo!(),
             Index::Enum(index) => index.filter(op),
-        };
-
-        hits.map(|hits| FilterResult { hits })
+        }
     }
 
     pub(crate) fn sort(&self, items: &RoaringBitmap) -> Vec<u32> {
@@ -138,29 +161,6 @@ impl StringIndex {
         Self::default()
     }
 
-    fn append(&mut self, value: FieldValue, position: u32) {
-        let string_value = value
-            .get_string()
-            .expect("String index only supports appending string values.");
-
-        self.inner.put(string_value, position);
-    }
-
-    fn filter(&self, op: &FilterOperation) -> Option<RoaringBitmap> {
-        match op {
-            FilterOperation::Eq(value) => self.equal(value),
-            _ => panic!("Unsupported filter operation {:?}", op),
-        }
-    }
-
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let string_value = value
-            .as_string()
-            .expect("Invalid value for \"equal\" filter. Expected string value.");
-
-        self.inner.0.get(string_value).cloned()
-    }
-
     fn put(&mut self, value: FieldValue, position: u32) {
         let value = value
             .get_string()
@@ -178,6 +178,20 @@ impl StringIndex {
     }
 }
 
+impl FilterableIndex for StringIndex {
+    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
+        let string_value = value
+            .as_string()
+            .expect("Invalid value for \"equal\" filter. Expected string value.");
+
+        self.inner.get(string_value).cloned()
+    }
+
+    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
+        panic!("Unsupported filter operation \"between\" for string index")
+    }
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct NumericIndex {
     inner: SortableIndex<OrderedFloat<f64>>,
@@ -188,43 +202,30 @@ impl NumericIndex {
         Self::default()
     }
 
-    fn append(&mut self, value: FieldValue, position: u32) {
-        let numeric_value = value
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .get_numeric()
+            .expect("Numeric index only allows to insert numeric values.");
+
+        self.inner.put(value, position);
+    }
+
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
             .as_numeric()
-            .copied()
-            .expect("Numeric index only supports appending numeric values.");
+            .expect("Numeric index only allows to remove numeric values.");
 
-        self.inner.put(numeric_value, position);
+        self.inner.remove(value, position);
     }
+}
 
-    fn filter(&self, op: &FilterOperation) -> Option<RoaringBitmap> {
-        match op {
-            FilterOperation::Eq(value) => self.equal(value),
-            FilterOperation::Between(first, second) => {
-                self.between(Bound::Included(first), Bound::Included(second))
-            }
-            FilterOperation::GreaterThan(value) => {
-                self.between(Bound::Excluded(value), Bound::Unbounded)
-            }
-            FilterOperation::GreaterOrEqual(value) => {
-                self.between(Bound::Included(value), Bound::Unbounded)
-            }
-            FilterOperation::LessThan(value) => {
-                self.between(Bound::Unbounded, Bound::Excluded(value))
-            }
-            FilterOperation::LessThanOrEqual(value) => {
-                self.between(Bound::Unbounded, Bound::Included(value))
-            }
-        }
-    }
-
+impl FilterableIndex for NumericIndex {
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
         let numeric_value = value
             .as_numeric()
-            .copied()
             .expect("Invalid value for \"equal\" filter. Expected numeric value.");
 
-        self.inner.0.get(&numeric_value).cloned()
+        self.inner.get(numeric_value).cloned()
     }
 
     fn between(
@@ -254,22 +255,6 @@ impl NumericIndex {
         } else {
             Some(matches)
         }
-    }
-
-    fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .get_numeric()
-            .expect("Numeric index only allows to insert numeric values.");
-
-        self.inner.put(value, position);
-    }
-
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .as_numeric()
-            .expect("Numeric index only allows to remove numeric values.");
-
-        self.inner.remove(value, position);
     }
 }
 
@@ -303,32 +288,6 @@ impl EnumIndex {
         }
     }
 
-    fn append(&mut self, value: FieldValue, position: u32) {
-        let string_value = value
-            .as_string()
-            .expect("Enum index only supports appending string values.");
-
-        if let Some(index) = self.values.get_index_of(string_value) {
-            self.inner.put(index, position);
-        }
-    }
-
-    fn filter(&self, op: &FilterOperation) -> Option<RoaringBitmap> {
-        match op {
-            FilterOperation::Eq(value) => self.equal(value),
-            _ => panic!("Unsupported filter operation {:?}", op),
-        }
-    }
-
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let string_value = value
-            .as_string()
-            .expect("Enum index only supports string values for \"equal\" filter.");
-
-        let index = self.values.get_index_of(string_value)?;
-        self.inner.0.get(&index).cloned()
-    }
-
     fn put(&mut self, value: FieldValue, position: u32) {
         let value = value
             .as_string()
@@ -356,10 +315,26 @@ impl EnumIndex {
     }
 }
 
+impl FilterableIndex for EnumIndex {
+    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
+        let string_value = value
+            .as_string()
+            .expect("Enum index only supports string values for \"equal\" filter.");
+
+        let index = self.values.get_index_of(string_value)?;
+        self.inner.get(&index).cloned()
+    }
+
+    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
+        panic!("Unsupported filter operation \"between\" for enum index")
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 struct SortableIndex<T: Ord>(BTreeMap<T, RoaringBitmap>);
 
 impl<T: Ord> SortableIndex<T> {
+    /// Sort the provided `items` (ascendant, none last)
     fn sort(&self, items: &RoaringBitmap) -> Vec<u32> {
         let mut sorted = Vec::new();
         let mut not_found = RoaringBitmap::new();
@@ -378,6 +353,10 @@ impl<T: Ord> SortableIndex<T> {
         sorted.extend(not_found);
 
         sorted
+    }
+
+    fn get(&self, key: &T) -> Option<&RoaringBitmap> {
+        self.0.get(key)
     }
 
     fn put(&mut self, key: T, position: u32) {

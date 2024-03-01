@@ -25,30 +25,34 @@ impl FieldValue {
     }
 
     fn as_numeric(&self) -> Option<&OrderedFloat<f64>> {
-        match self {
-            FieldValue::String(_) => None,
-            FieldValue::Numeric(value) => Some(value),
+        if let FieldValue::Numeric(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
     fn get_numeric(self) -> Option<OrderedFloat<f64>> {
-        match self {
-            FieldValue::String(_) => None,
-            FieldValue::Numeric(value) => Some(value),
+        if let FieldValue::Numeric(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
     fn as_string(&self) -> Option<&String> {
-        match self {
-            FieldValue::String(value) => Some(value),
-            FieldValue::Numeric(_) => None,
+        if let FieldValue::String(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 
     fn get_string(self) -> Option<String> {
-        match self {
-            FieldValue::String(value) => Some(value),
-            FieldValue::Numeric(_) => None,
+        if let FieldValue::String(value) = self {
+            Some(value)
+        } else {
+            None
         }
     }
 }
@@ -114,33 +118,30 @@ impl CompositeFilter {
         })
     }
 
-    fn apply(&self, indices: &QueryIndices) -> Option<FilterResult> {
+    fn apply(&self, indices: &QueryIndices) -> FilterResult {
         match self {
-            CompositeFilter::And(filters) => filters.iter().fold(None, |acc, filter| {
-                let filter_result = filter.apply(indices);
-                combine_by(filter_result, acc, |inner, current| current.and(inner))
-            }),
-            CompositeFilter::Or(filters) => filters.iter().fold(None, |acc, filter| {
-                let filter_result = filter.apply(indices);
-                combine_by(filter_result, acc, |inner, current| current.or(inner))
-            }),
+            CompositeFilter::And(filters) => {
+                let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
+                    acc.map(|current| current.and(filter.apply(indices)))
+                });
+
+                result.unwrap_or_else(FilterResult::empty)
+            }
+            CompositeFilter::Or(filters) => {
+                let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
+                    acc.map(|current| current.or(filter.apply(indices)))
+                });
+
+                result.unwrap_or_else(FilterResult::empty)
+            }
             CompositeFilter::Single(filter) => {
-                let index = indices.get(&filter.name)?;
+                let index = indices.get(&filter.name).unwrap_or_else(|| {
+                    panic!("Filter with name {} has no index assigned", &filter.name)
+                });
+
                 index.filter(&filter.operation)
             }
         }
-    }
-}
-
-fn combine_by<T, F>(first: Option<T>, second: Option<T>, action: F) -> Option<T>
-where
-    F: Fn(T, T) -> T,
-{
-    match (first, second) {
-        (Some(first), Some(second)) => Some(action(first, second)),
-        (Some(first), None) => Some(first),
-        (None, Some(second)) => Some(second),
-        (None, None) => None,
     }
 }
 
@@ -166,6 +167,16 @@ struct FilterResult {
 }
 
 impl FilterResult {
+    fn new(hits: RoaringBitmap) -> Self {
+        FilterResult { hits }
+    }
+
+    fn empty() -> Self {
+        FilterResult {
+            hits: RoaringBitmap::new(),
+        }
+    }
+
     fn and(self, another: FilterResult) -> FilterResult {
         FilterResult {
             hits: self.hits & another.hits,
@@ -212,7 +223,7 @@ impl<T: Indexable> EntityStorage<T> {
                     .entry(property.name)
                     .or_insert(Index::from_type(&property.descriptor));
 
-                index.append(property.value, position);
+                index.put(property.value, position);
             }
 
             // Associate index position to the field ID
@@ -390,7 +401,7 @@ impl QueryExecution {
     {
         let indices = QueryIndices::new(&storage.indices).attach_deltas(deltas, storage);
 
-        let filter_result = self.filter.apply(&indices).unwrap();
+        let filter_result = self.filter.apply(&indices);
         let item_ids = self.read_positions(filter_result, &indices, storage);
 
         QueryExecution::read_data(&item_ids, storage, deltas)
