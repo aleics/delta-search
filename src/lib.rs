@@ -2,7 +2,7 @@ pub mod index;
 
 use bimap::BiHashMap;
 use ordered_float::OrderedFloat;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use crate::index::Indexable;
@@ -116,6 +116,14 @@ impl CompositeFilter {
             name: name.to_string(),
             operation: FilterOperation::LessThanOrEqual(value),
         })
+    }
+
+    pub fn or(filters: Vec<CompositeFilter>) -> Self {
+        CompositeFilter::Or(filters)
+    }
+
+    pub fn and(filters: Vec<CompositeFilter>) -> Self {
+        CompositeFilter::And(filters)
     }
 
     fn apply(&self, indices: &QueryIndices) -> FilterResult {
@@ -293,6 +301,7 @@ pub trait Delta {
 
 type BoxedDelta<T> = Box<dyn Delta<Value = T>>;
 
+#[derive(Copy, Clone)]
 pub struct Pagination {
     start: usize,
     size: usize,
@@ -324,7 +333,6 @@ impl Sort {
 
 struct QueryIndices<'a> {
     stored: &'a HashMap<String, Index>,
-    affected: HashSet<DataItemId>,
     deltas: HashMap<String, Index>,
 }
 
@@ -332,7 +340,6 @@ impl<'a> QueryIndices<'a> {
     fn new(stored: &'a HashMap<String, Index>) -> Self {
         QueryIndices {
             stored,
-            affected: HashSet::new(),
             deltas: HashMap::new(),
         }
     }
@@ -358,7 +365,6 @@ impl<'a> QueryIndices<'a> {
                     }
 
                     self.deltas.insert(change.scope.field_name, dynamic);
-                    self.affected.insert(change.scope.id);
                 }
             }
         }
@@ -370,115 +376,20 @@ impl<'a> QueryIndices<'a> {
     }
 }
 
-pub struct QueryExecution {
+pub struct QueryExecution<T> {
     filter: CompositeFilter,
+    deltas: Vec<BoxedDelta<T>>,
     sort: Option<Sort>,
     pagination: Option<Pagination>,
 }
 
-impl QueryExecution {
+impl<T: Indexable + Clone> QueryExecution<T> {
     pub fn new(filter: CompositeFilter) -> Self {
         QueryExecution {
+            deltas: Vec::new(),
             filter,
             pagination: None,
             sort: None,
-        }
-    }
-
-    pub fn with_sort(mut self, sort: Sort) -> Self {
-        self.sort = Some(sort);
-        self
-    }
-
-    pub fn with_pagination(mut self, pagination: Pagination) -> Self {
-        self.pagination = Some(pagination);
-        self
-    }
-
-    pub fn run<T>(self, storage: &EntityStorage<T>, deltas: &[BoxedDelta<T>]) -> Vec<T>
-    where
-        T: Indexable + Clone,
-    {
-        let indices = QueryIndices::new(&storage.indices).attach_deltas(deltas, storage);
-
-        let filter_result = self.filter.apply(&indices);
-        let item_ids = self.read_positions(filter_result, &indices, storage);
-
-        QueryExecution::read_data(&item_ids, storage, deltas)
-    }
-
-    fn read_positions<T>(
-        &self,
-        filter_result: FilterResult,
-        indices: &QueryIndices,
-        storage: &EntityStorage<T>,
-    ) -> HashSet<DataItemId>
-    where
-        T: Indexable,
-    {
-        let sorted_items = self
-            .sort
-            .as_ref()
-            .map(|sort| sort.apply(&filter_result.hits, indices))
-            .unwrap_or_else(|| filter_result.hits.iter().collect());
-
-        // TODO: Unify pagination?
-        if let Some(pagination) = &self.pagination {
-            return sorted_items
-                .iter()
-                .skip(pagination.start)
-                .take(pagination.size)
-                .flat_map(|position| storage.get_id_by_position(position))
-                .copied()
-                .collect();
-        }
-
-        sorted_items
-            .iter()
-            .flat_map(|position| storage.get_id_by_position(position))
-            .copied()
-            .collect()
-    }
-
-    fn read_data<T>(
-        ids: &HashSet<DataItemId>,
-        storage: &EntityStorage<T>,
-        deltas: &[BoxedDelta<T>],
-    ) -> Vec<T>
-    where
-        T: Clone,
-    {
-        let mut data = Vec::new();
-
-        let deltas_by_id: HashMap<_, _> = deltas
-            .iter()
-            .map(|delta| (delta.change().scope.id, delta))
-            .collect();
-
-        for id in ids {
-            if let Some(mut item) = storage.data.get(id).cloned() {
-                if let Some(delta) = deltas_by_id.get(id) {
-                    delta.apply_data(&mut item);
-                }
-
-                data.push(item);
-            }
-        }
-
-        data
-    }
-}
-
-pub struct Engine<T> {
-    storage: EntityStorage<T>,
-    deltas: Vec<BoxedDelta<T>>,
-}
-
-impl<T> Engine<T> {
-    pub fn new(storage: EntityStorage<T>) -> Self {
-        Engine {
-            storage,
-            deltas: Vec::new(),
         }
     }
 
@@ -491,11 +402,90 @@ impl<T> Engine<T> {
         }
         self
     }
+
+    pub fn with_sort(mut self, sort: Sort) -> Self {
+        self.sort = Some(sort);
+        self
+    }
+
+    pub fn with_pagination(mut self, pagination: Pagination) -> Self {
+        self.pagination = Some(pagination);
+        self
+    }
+
+    pub fn run(self, storage: &EntityStorage<T>) -> Vec<T> {
+        let indices = QueryIndices::new(&storage.indices).attach_deltas(&self.deltas, storage);
+
+        let filter_result = self.filter.apply(&indices);
+        let item_ids = self.sort(filter_result, &indices, storage);
+
+        self.read_data(&item_ids, storage)
+    }
+
+    fn sort(
+        &self,
+        filter_result: FilterResult,
+        indices: &QueryIndices,
+        storage: &EntityStorage<T>,
+    ) -> Vec<DataItemId> {
+        if let Some(sort) = &self.sort {
+            return sort
+                .apply(&filter_result.hits, indices)
+                .iter()
+                .flat_map(|position| storage.get_id_by_position(position))
+                .copied()
+                .collect();
+        }
+
+        filter_result
+            .hits
+            .iter()
+            .flat_map(|position| storage.get_id_by_position(&position))
+            .copied()
+            .collect()
+    }
+
+    fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage<T>) -> Vec<T> {
+        let mut data = Vec::new();
+
+        let deltas_by_id: HashMap<DataItemId, Vec<&BoxedDelta<T>>> =
+            self.deltas.iter().fold(HashMap::new(), |mut acc, delta| {
+                let key = delta.change().scope.id;
+                acc.entry(key).or_default().push(delta);
+                acc
+            });
+
+        let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
+
+        for id in ids.iter().skip(pagination.start).take(pagination.size) {
+            if let Some(mut item) = storage.data.get(id).cloned() {
+                if let Some(deltas) = deltas_by_id.get(id) {
+                    for delta in deltas {
+                        delta.apply_data(&mut item);
+                    }
+                }
+
+                data.push(item);
+            }
+        }
+
+        data
+    }
+}
+
+pub struct Engine<T> {
+    storage: EntityStorage<T>,
+}
+
+impl<T> Engine<T> {
+    pub fn new(storage: EntityStorage<T>) -> Self {
+        Engine { storage }
+    }
 }
 
 impl<T: Indexable + Clone> Engine<T> {
-    pub fn query(&self, execution: QueryExecution) -> Vec<T> {
-        execution.run(&self.storage, &self.deltas)
+    pub fn query(&self, execution: QueryExecution<T>) -> Vec<T> {
+        execution.run(&self.storage)
     }
 }
 
@@ -764,13 +754,15 @@ mod tests {
             DecreaseScoreDelta::new(LIONEL_MESSI.id, LIONEL_MESSI.score),
         ];
 
-        let engine = Engine::new(storage).with_deltas(deltas);
+        let engine = Engine::new(storage);
 
         // when
         let execution = QueryExecution::new(CompositeFilter::eq(
             "sport",
             FieldValue::string("football".to_string()),
-        ));
+        ))
+        .with_deltas(deltas);
+
         let mut matches = engine.query(execution);
 
         // then
@@ -783,7 +775,7 @@ mod tests {
                     id: LIONEL_MESSI.id,
                     name: LIONEL_MESSI.name.to_string(),
                     score: 8.0,
-                    sport: LIONEL_MESSI.sport.clone(),
+                    sport: LIONEL_MESSI.sport.clone()
                 },
                 CRISTIANO_RONALDO.clone()
             ]
@@ -804,13 +796,15 @@ mod tests {
             Sport::Football,
         )];
 
-        let engine = Engine::new(storage).with_deltas(deltas);
+        let engine = Engine::new(storage);
 
         // when
         let execution = QueryExecution::new(CompositeFilter::eq(
             "sport",
             FieldValue::string("football".to_string()),
-        ));
+        ))
+        .with_deltas(deltas);
+
         let mut matches = engine.query(execution);
 
         // then
