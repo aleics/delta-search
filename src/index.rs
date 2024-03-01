@@ -4,7 +4,8 @@ use ordered_float::OrderedFloat;
 use roaring::RoaringBitmap;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Bound;
-use time::OffsetDateTime;
+use time::format_description::well_known::Iso8601;
+use time::Date;
 
 pub trait Indexable {
     fn id(&self) -> DataItemId;
@@ -49,6 +50,17 @@ impl IndexableValue {
             name,
             value: FieldValue::string(value),
             descriptor: TypeDescriptor::Enum(possibilities),
+        }
+    }
+
+    pub fn date_iso(name: String, value: &str) -> Self {
+        let date = Date::parse(value, &Iso8601::DEFAULT)
+            .unwrap_or_else(|err| panic!("Date could not be parsed: {}", err));
+
+        IndexableValue {
+            name,
+            value: FieldValue::date(date),
+            descriptor: TypeDescriptor::Date,
         }
     }
 }
@@ -118,7 +130,7 @@ impl Index {
         match self {
             Index::String(index) => index.filter(op),
             Index::Numeric(index) => index.filter(op),
-            Index::Date(_) =>  todo!(),
+            Index::Date(index) => index.filter(op),
             Index::Enum(index) => index.filter(op),
         }
     }
@@ -136,7 +148,7 @@ impl Index {
         match self {
             Index::String(index) => index.put(value, position),
             Index::Numeric(index) => index.put(value, position),
-            Index::Date(_) => todo!(),
+            Index::Date(index) => index.put(value, position),
             Index::Enum(index) => index.put(value, position),
         }
     }
@@ -145,7 +157,7 @@ impl Index {
         match self {
             Index::String(index) => index.remove(value, position),
             Index::Numeric(index) => index.remove(value, position),
-            Index::Date(_) => todo!(),
+            Index::Date(index) => index.remove(value, position),
             Index::Enum(index) => index.remove(value, position),
         }
     }
@@ -268,9 +280,59 @@ impl DateIndex {
         Self::default()
     }
 
-    fn append(&mut self, value: OffsetDateTime, position: u32) {
-        let since_epoch = value.unix_timestamp();
-        self.inner.put(since_epoch, position);
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .get_date_epoch()
+            .expect("Date index only allows to insert date values.");
+
+        self.inner.put(value, position);
+    }
+
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
+            .get_date_epoch()
+            .expect("Date index only allows to remove date values.");
+
+        self.inner.remove(&value, position);
+    }
+}
+
+impl FilterableIndex for DateIndex {
+    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
+        let date_value = value
+            .get_date_epoch()
+            .expect("Invalid value for \"equal\" filter. Expected date value.");
+
+        self.inner.get(&date_value).cloned()
+    }
+
+    fn between(
+        &self,
+        first: Bound<&FieldValue>,
+        second: Bound<&FieldValue>,
+    ) -> Option<RoaringBitmap> {
+        let first_bound = first.map(|value| {
+            value
+                .get_date_epoch()
+                .expect("Invalid \"between\" filter value. Expected date value.")
+        });
+
+        let second_bound = second.map(|value| {
+            value
+                .get_date_epoch()
+                .expect("Invalid \"between\" filter value. Expected date value.")
+        });
+
+        let mut matches = RoaringBitmap::new();
+        for (_, bitmap) in self.inner.0.range((first_bound, second_bound)) {
+            matches |= bitmap;
+        }
+
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
     }
 }
 

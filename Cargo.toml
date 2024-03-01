@@ -10,7 +10,7 @@ bimap = "0.6.3"
 indexmap = "2.2.5"
 ordered-float = "4.0"
 roaring = "0.10.3"
-time = "0.3.34"
+time = { version = "0.3.34", features = ["parsing"] }
 
 [dev-dependencies]
 lazy_static = "1.4.0"

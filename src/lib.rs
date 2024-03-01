@@ -8,11 +8,13 @@ use std::fmt::{Display, Formatter};
 use crate::index::Indexable;
 use index::Index;
 use roaring::RoaringBitmap;
+use time::{Date, OffsetDateTime, Time};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldValue {
     String(String),
     Numeric(OrderedFloat<f64>),
+    Date(OffsetDateTime),
 }
 
 impl FieldValue {
@@ -22,6 +24,10 @@ impl FieldValue {
 
     pub fn numeric(value: f64) -> FieldValue {
         FieldValue::Numeric(OrderedFloat(value))
+    }
+
+    pub fn date(date: Date) -> FieldValue {
+        FieldValue::Date(OffsetDateTime::new_utc(date, Time::MIDNIGHT))
     }
 
     fn as_numeric(&self) -> Option<&OrderedFloat<f64>> {
@@ -55,6 +61,14 @@ impl FieldValue {
             None
         }
     }
+
+    fn get_date_epoch(&self) -> Option<i64> {
+        if let FieldValue::Date(value) = self {
+            Some(value.unix_timestamp())
+        } else {
+            None
+        }
+    }
 }
 
 impl Display for FieldValue {
@@ -62,6 +76,7 @@ impl Display for FieldValue {
         match self {
             FieldValue::String(value) => write!(f, "{}", value),
             FieldValue::Numeric(value) => write!(f, "{}", value.0),
+            FieldValue::Date(value) => write!(f, "{}", value),
         }
     }
 }
@@ -498,6 +513,7 @@ mod tests {
     };
     use lazy_static::lazy_static;
     use std::collections::HashSet;
+    use time::{Date, Month};
 
     #[derive(Debug, PartialEq, Clone)]
     enum Sport {
@@ -520,6 +536,7 @@ mod tests {
         name: String,
         score: f64,
         sport: Sport,
+        birth_date: String,
     }
 
     impl Indexable for Player {
@@ -539,6 +556,7 @@ mod tests {
                         Sport::Football.as_string(),
                     ]),
                 ),
+                IndexableValue::date_iso("birth_date".to_string(), &self.birth_date),
             ]
         }
     }
@@ -604,24 +622,28 @@ mod tests {
             name: "Michael Jordan".to_string(),
             score: 10.0,
             sport: Sport::Basketball,
+            birth_date: "1963-02-17".to_string()
         };
         static ref LIONEL_MESSI: Player = Player {
             id: 1,
             name: "Lionel Messi".to_string(),
             score: 9.0,
             sport: Sport::Football,
+            birth_date: "1987-06-24".to_string()
         };
         static ref CRISTIANO_RONALDO: Player = Player {
             id: 2,
             name: "Cristiano Ronaldo".to_string(),
             score: 9.0,
             sport: Sport::Football,
+            birth_date: "1985-02-05".to_string()
         };
         static ref ROGER: Player = Player {
-            id: 2,
+            id: 3,
             name: "Roger".to_string(),
             score: 5.0,
             sport: Sport::Football,
+            birth_date: "1996-05-01".to_string()
         };
     }
 
@@ -639,6 +661,7 @@ mod tests {
             } else {
                 Sport::Football
             },
+            birth_date: "2000-01-01".to_string(),
         }
     }
 
@@ -665,6 +688,58 @@ mod tests {
         let execution = QueryExecution::new(CompositeFilter::eq(
             "sport",
             FieldValue::string("football".to_string()),
+        ));
+        let mut matches = engine.query(execution);
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches,
+            vec![LIONEL_MESSI.clone(), CRISTIANO_RONALDO.clone()]
+        );
+    }
+
+    #[test]
+    fn applies_date_ge_filter() {
+        // given
+        let storage = storage(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        // when
+        let execution = QueryExecution::new(CompositeFilter::ge(
+            "birth_date",
+            FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
+        ));
+        let mut matches = engine.query(execution);
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(matches, vec![ROGER.clone()]);
+    }
+
+    #[test]
+    fn applies_date_between_filter() {
+        // given
+        let storage = storage(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        // when
+        let execution = QueryExecution::new(CompositeFilter::between(
+            "birth_date",
+            FieldValue::date(Date::from_calendar_date(1970, Month::January, 1).unwrap()),
+            FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
         ));
         let mut matches = engine.query(execution);
 
@@ -775,7 +850,8 @@ mod tests {
                     id: LIONEL_MESSI.id,
                     name: LIONEL_MESSI.name.to_string(),
                     score: 8.0,
-                    sport: LIONEL_MESSI.sport.clone()
+                    sport: LIONEL_MESSI.sport.clone(),
+                    birth_date: LIONEL_MESSI.birth_date.clone()
                 },
                 CRISTIANO_RONALDO.clone()
             ]
@@ -818,6 +894,7 @@ mod tests {
                     name: MICHAEL_JORDAN.name.to_string(),
                     score: MICHAEL_JORDAN.score,
                     sport: Sport::Football,
+                    birth_date: MICHAEL_JORDAN.birth_date.clone()
                 },
                 LIONEL_MESSI.clone(),
                 CRISTIANO_RONALDO.clone()
