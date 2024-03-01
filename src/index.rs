@@ -1,4 +1,5 @@
-use crate::{DataItemId, FieldValue, FilterOperation, FilterResult};
+use crate::query::{FilterOperation, FilterResult};
+use crate::{DataItemId, FieldValue};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::RoaringBitmap;
