@@ -1,4 +1,4 @@
-use crate::query::{FilterOperation, FilterResult};
+use crate::query::{FilterOperation, FilterResult, SortDirection};
 use crate::{DataItemId, FieldValue};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
@@ -136,12 +136,12 @@ impl Index {
         }
     }
 
-    pub(crate) fn sort(&self, items: &RoaringBitmap) -> Vec<u32> {
+    pub(crate) fn sort(&self, items: &RoaringBitmap, direction: &SortDirection) -> Vec<u32> {
         match self {
-            Index::String(index) => index.inner.sort(items),
-            Index::Numeric(index) => index.inner.sort(items),
-            Index::Date(index) => index.inner.sort(items),
-            Index::Enum(index) => index.inner.sort(items),
+            Index::String(index) => index.inner.sort(items, direction),
+            Index::Numeric(index) => index.inner.sort(items, direction),
+            Index::Date(index) => index.inner.sort(items, direction),
+            Index::Enum(index) => index.inner.sort(items, direction),
         }
     }
 
@@ -397,13 +397,40 @@ impl FilterableIndex for EnumIndex {
 struct SortableIndex<T: Ord>(BTreeMap<T, RoaringBitmap>);
 
 impl<T: Ord> SortableIndex<T> {
-    /// Sort the provided `items` (ascendant, none last)
-    fn sort(&self, items: &RoaringBitmap) -> Vec<u32> {
+    /// Sort the provided `items` by a certain direction
+    fn sort(&self, items: &RoaringBitmap, direction: &SortDirection) -> Vec<u32> {
+        match direction {
+            SortDirection::ASC => self.sort_asc(items),
+            SortDirection::DESC => self.sort_desc(items),
+        }
+    }
+
+    fn sort_asc(&self, items: &RoaringBitmap) -> Vec<u32> {
         let mut sorted = Vec::new();
         let mut not_found = RoaringBitmap::new();
 
         // Iterate over the tree of sorted values in the index
         for bitmap in self.0.values() {
+            // Intersection between the value items and the input
+            sorted.extend(items & bitmap);
+
+            // Compute elements not present in the index by intersecting the difference of the
+            // index values with the input. An item is not found if it's not present in any of
+            // the indexed values.
+            not_found &= items ^ bitmap;
+        }
+
+        sorted.extend(not_found);
+
+        sorted
+    }
+
+    fn sort_desc(&self, items: &RoaringBitmap) -> Vec<u32> {
+        let mut sorted = Vec::new();
+        let mut not_found = RoaringBitmap::new();
+
+        // Iterate over the tree of sorted values in the index in a reversed order
+        for bitmap in self.0.values().rev() {
             // Intersection between the value items and the input
             sorted.extend(items & bitmap);
 

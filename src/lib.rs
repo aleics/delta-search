@@ -177,7 +177,7 @@ impl<T: Indexable + Clone> Engine<T> {
 #[cfg(test)]
 mod tests {
     use crate::fixtures::{DecreaseScoreDelta, Player, Sport, SwitchSportsDelta};
-    use crate::query::{CompositeFilter, Pagination, QueryExecution, Sort};
+    use crate::query::{CompositeFilter, Pagination, QueryExecution, Sort, SortDirection};
     use crate::{Engine, EntityStorage, FieldValue};
     use lazy_static::lazy_static;
     use time::{Date, Month};
@@ -250,12 +250,10 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
+        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+
         // when
-        let execution = QueryExecution::new(CompositeFilter::eq(
-            "sport",
-            FieldValue::string("football".to_string()),
-        ));
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -277,12 +275,13 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
-        // when
-        let execution = QueryExecution::new(CompositeFilter::ge(
+        let filter = CompositeFilter::ge(
             "birth_date",
             FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
-        ));
-        let mut matches = engine.query(execution);
+        );
+
+        // when
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -301,13 +300,14 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
-        // when
-        let execution = QueryExecution::new(CompositeFilter::between(
+        let filter = CompositeFilter::between(
             "birth_date",
             FieldValue::date(Date::from_calendar_date(1970, Month::January, 1).unwrap()),
             FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
-        ));
-        let mut matches = engine.query(execution);
+        );
+
+        // when
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -328,13 +328,11 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
+        let filter =
+            CompositeFilter::between("score", FieldValue::numeric(6.0), FieldValue::numeric(10.0));
+
         // when
-        let execution = QueryExecution::new(CompositeFilter::between(
-            "score",
-            FieldValue::numeric(6.0),
-            FieldValue::numeric(10.0),
-        ));
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -352,9 +350,10 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
+        let filter = CompositeFilter::ge("score", FieldValue::numeric(6.0));
+
         // when
-        let execution = QueryExecution::new(CompositeFilter::ge("score", FieldValue::numeric(6.0)));
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -372,9 +371,10 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
+        let filter = CompositeFilter::le("score", FieldValue::numeric(6.0));
+
         // when
-        let execution = QueryExecution::new(CompositeFilter::le("score", FieldValue::numeric(6.0)));
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -393,12 +393,13 @@ mod tests {
         ]);
         let engine = Engine::new(storage);
 
-        // when
-        let execution = QueryExecution::new(CompositeFilter::negate(CompositeFilter::eq(
+        let filter = CompositeFilter::negate(CompositeFilter::eq(
             "sport",
             FieldValue::String(Sport::Basketball.as_string()),
-        )));
-        let mut matches = engine.query(execution);
+        ));
+
+        // when
+        let mut matches = engine.query(QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -421,21 +422,20 @@ mod tests {
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
         ]);
+        let engine = Engine::new(storage);
+
         let deltas = vec![
             DecreaseScoreDelta::new(MICHAEL_JORDAN.id, MICHAEL_JORDAN.score),
             DecreaseScoreDelta::new(LIONEL_MESSI.id, LIONEL_MESSI.score),
         ];
-
-        let engine = Engine::new(storage);
+        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
 
         // when
-        let execution = QueryExecution::new(CompositeFilter::eq(
-            "sport",
-            FieldValue::string("football".to_string()),
-        ))
-        .with_deltas(deltas);
-
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(
+            QueryExecution::new()
+                .with_filter(filter)
+                .with_deltas(deltas),
+        );
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -463,22 +463,21 @@ mod tests {
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
         ]);
+        let engine = Engine::new(storage);
+
         let deltas = vec![SwitchSportsDelta::new(
             MICHAEL_JORDAN.id,
             MICHAEL_JORDAN.sport.clone(),
             Sport::Football,
         )];
-
-        let engine = Engine::new(storage);
+        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
 
         // when
-        let execution = QueryExecution::new(CompositeFilter::eq(
-            "sport",
-            FieldValue::string("football".to_string()),
-        ))
-        .with_deltas(deltas);
-
-        let mut matches = engine.query(execution);
+        let mut matches = engine.query(
+            QueryExecution::new()
+                .with_filter(filter)
+                .with_deltas(deltas),
+        );
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -506,18 +505,18 @@ mod tests {
         let engine = Engine::new(storage);
 
         let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+        let sort = Sort::new("score");
         let pagination = Pagination::new(2, 5);
 
         // when
-        let execution = QueryExecution::new(filter)
-            .with_sort(Sort::new("score".to_string()))
-            .with_pagination(pagination);
-
-        let mut matches = engine.query(execution);
+        let matches = engine.query(
+            QueryExecution::new()
+                .with_filter(filter)
+                .with_sort(sort)
+                .with_pagination(pagination),
+        );
 
         // then
-        matches.sort_by(|a, b| a.id.cmp(&b.id));
-
         assert_eq!(
             matches,
             vec![
@@ -526,6 +525,58 @@ mod tests {
                 create_player_from_index(9),
                 create_player_from_index(11),
                 create_player_from_index(13)
+            ]
+        );
+    }
+
+    #[test]
+    fn applies_sort_numeric_asc() {
+        // given
+        let storage = storage(vec![
+            MICHAEL_JORDAN.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        let sort = Sort::new("score").with_direction(SortDirection::ASC);
+
+        // when
+        let matches = engine.query(QueryExecution::new().with_sort(sort));
+
+        // then
+        assert_eq!(
+            matches,
+            vec![
+                ROGER.clone(),
+                CRISTIANO_RONALDO.clone(),
+                MICHAEL_JORDAN.clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn applies_sort_numeric_desc() {
+        // given
+        let storage = storage(vec![
+            MICHAEL_JORDAN.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        let sort = Sort::new("score").with_direction(SortDirection::DESC);
+
+        // when
+        let matches = engine.query(QueryExecution::new().with_sort(sort));
+
+        // then
+        assert_eq!(
+            matches,
+            vec![
+                MICHAEL_JORDAN.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
             ]
         );
     }

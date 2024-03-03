@@ -83,25 +83,25 @@ impl<'a> QueryIndices<'a> {
             .get(&sort.by)
             .expect("Sort by criteria does not have an index.");
 
-        index.sort(items)
+        index.sort(items, &sort.direction)
     }
 }
 
 pub struct QueryExecution<T> {
-    filter: CompositeFilter,
+    filter: Option<CompositeFilter>,
     deltas: Vec<BoxedDelta<T>>,
     sort: Option<Sort>,
     pagination: Option<Pagination>,
 }
 
 impl<T: Indexable + Clone> QueryExecution<T> {
-    pub fn new(filter: CompositeFilter) -> Self {
-        QueryExecution {
-            deltas: Vec::new(),
-            filter,
-            pagination: None,
-            sort: None,
-        }
+    pub fn new() -> Self {
+        QueryExecution::default()
+    }
+
+    pub fn with_filter(mut self, filter: CompositeFilter) -> Self {
+        self.filter = Some(filter);
+        self
     }
 
     pub fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
@@ -127,7 +127,12 @@ impl<T: Indexable + Clone> QueryExecution<T> {
     pub fn run(self, storage: &EntityStorage<T>) -> Vec<T> {
         let indices = QueryIndices::new(&storage.indices).attach_deltas(&self.deltas, storage);
 
-        let filter_result = indices.execute_filter(&self.filter);
+        let filter_result = self
+            .filter
+            .as_ref()
+            .map(|filter| indices.execute_filter(filter))
+            .unwrap_or_else(|| FilterResult::new(indices.stored.all.clone()));
+
         let item_ids = self.sort(filter_result, &indices, storage);
 
         self.read_data(&item_ids, storage)
@@ -181,6 +186,17 @@ impl<T: Indexable + Clone> QueryExecution<T> {
         }
 
         data
+    }
+}
+
+impl<T: Indexable + Clone> Default for QueryExecution<T> {
+    fn default() -> Self {
+        QueryExecution {
+            filter: None,
+            deltas: Vec::new(),
+            sort: None,
+            pagination: None,
+        }
     }
 }
 
@@ -289,13 +305,27 @@ impl Pagination {
     }
 }
 
+pub enum SortDirection {
+    ASC,
+    DESC,
+}
+
 pub struct Sort {
     by: String,
+    direction: SortDirection,
 }
 
 impl Sort {
-    pub fn new(by: String) -> Self {
-        Sort { by }
+    pub fn new(by: &str) -> Self {
+        Sort {
+            by: by.to_string(),
+            direction: SortDirection::ASC,
+        }
+    }
+
+    pub fn with_direction(mut self, direction: SortDirection) -> Self {
+        self.direction = direction;
+        self
     }
 }
 
