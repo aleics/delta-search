@@ -1,3 +1,5 @@
+#[cfg(feature = "test-fixtures")]
+pub mod fixtures;
 pub mod index;
 pub mod query;
 
@@ -162,113 +164,11 @@ impl<T: Indexable + Clone> Engine<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::index::IndexableValue;
-    use crate::query::{CompositeFilter, Delta, DeltaChange, Pagination, QueryExecution, Sort};
-    use crate::{DataItemId, Engine, EntityStorage, FieldValue, Indexable};
+    use crate::fixtures::{DecreaseScoreDelta, Player, Sport, SwitchSportsDelta};
+    use crate::query::{CompositeFilter, Pagination, QueryExecution, Sort};
+    use crate::{Engine, EntityStorage, FieldValue};
     use lazy_static::lazy_static;
-    use std::collections::HashSet;
     use time::{Date, Month};
-
-    #[derive(Debug, PartialEq, Clone)]
-    enum Sport {
-        Basketball,
-        Football,
-    }
-
-    impl Sport {
-        fn as_string(&self) -> String {
-            match self {
-                Sport::Basketball => "basketball".to_string(),
-                Sport::Football => "football".to_string(),
-            }
-        }
-    }
-
-    #[derive(Debug, PartialEq, Clone)]
-    struct Player {
-        id: usize,
-        name: String,
-        score: f64,
-        sport: Sport,
-        birth_date: String,
-    }
-
-    impl Indexable for Player {
-        fn id(&self) -> DataItemId {
-            self.id
-        }
-
-        fn index_values(&self) -> Vec<IndexableValue> {
-            vec![
-                IndexableValue::string("name".to_string(), self.name.to_string()),
-                IndexableValue::numeric("score".to_string(), self.score),
-                IndexableValue::enumerate(
-                    "sport".to_string(),
-                    self.sport.as_string(),
-                    HashSet::from_iter([
-                        Sport::Basketball.as_string(),
-                        Sport::Football.as_string(),
-                    ]),
-                ),
-                IndexableValue::date_iso("birth_date".to_string(), &self.birth_date),
-            ]
-        }
-    }
-
-    struct DecreaseScoreDelta {
-        id: DataItemId,
-        score: f64,
-    }
-
-    impl DecreaseScoreDelta {
-        fn new(id: DataItemId, score: f64) -> Self {
-            DecreaseScoreDelta { id, score }
-        }
-    }
-
-    impl Delta for DecreaseScoreDelta {
-        type Value = Player;
-
-        fn change(&self) -> DeltaChange {
-            DeltaChange::new(self.id, "score".to_string())
-                .before(FieldValue::numeric(self.score))
-                .after(FieldValue::numeric(self.score - 1.0))
-        }
-
-        fn apply_data(&self, value: &mut Self::Value) {
-            value.score -= 1.0;
-        }
-    }
-
-    struct SwitchSportsDelta {
-        id: DataItemId,
-        current: Sport,
-        new_sport: Sport,
-    }
-
-    impl SwitchSportsDelta {
-        fn new(id: DataItemId, current: Sport, new_sport: Sport) -> Self {
-            SwitchSportsDelta {
-                id,
-                current,
-                new_sport,
-            }
-        }
-    }
-
-    impl Delta for SwitchSportsDelta {
-        type Value = Player;
-
-        fn change(&self) -> DeltaChange {
-            DeltaChange::new(self.id, "sport".to_string())
-                .before(FieldValue::string(self.current.as_string()))
-                .after(FieldValue::string(self.new_sport.as_string()))
-        }
-
-        fn apply_data(&self, value: &mut Self::Value) {
-            value.sport = self.new_sport.clone();
-        }
-    }
 
     lazy_static! {
         static ref MICHAEL_JORDAN: Player = Player {
