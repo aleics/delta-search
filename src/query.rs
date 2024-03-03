@@ -1,15 +1,15 @@
 use crate::index::{Index, Indexable};
-use crate::{DataItemId, EntityStorage, FieldValue};
+use crate::{DataItemId, EntityIndices, EntityStorage, FieldValue};
 use roaring::RoaringBitmap;
 use std::collections::HashMap;
 
 struct QueryIndices<'a> {
-    stored: &'a HashMap<String, Index>,
+    stored: &'a EntityIndices,
     deltas: HashMap<String, Index>,
 }
 
 impl<'a> QueryIndices<'a> {
-    fn new(stored: &'a HashMap<String, Index>) -> Self {
+    fn new(stored: &'a EntityIndices) -> Self {
         QueryIndices {
             stored,
             deltas: HashMap::new(),
@@ -23,7 +23,7 @@ impl<'a> QueryIndices<'a> {
         for delta in deltas {
             let change = delta.change();
 
-            if let Some(current) = self.stored.get(&change.scope.field_name) {
+            if let Some(current) = self.stored.field_indices.get(&change.scope.field_name) {
                 if let Some(position) = storage.get_position_by_id(&change.scope.id) {
                     let mut dynamic = current.clone();
 
@@ -43,7 +43,9 @@ impl<'a> QueryIndices<'a> {
     }
 
     fn get(&self, name: &String) -> Option<&Index> {
-        self.deltas.get(name).or_else(|| self.stored.get(name))
+        self.deltas
+            .get(name)
+            .or_else(|| self.stored.field_indices.get(name))
     }
 
     fn execute_filter(&self, filter: &CompositeFilter) -> FilterResult {
@@ -61,6 +63,10 @@ impl<'a> QueryIndices<'a> {
                 });
 
                 result.unwrap_or_else(FilterResult::empty)
+            }
+            CompositeFilter::Not(filter) => {
+                let result = self.execute_filter(filter);
+                FilterResult::new(&self.stored.all - result.hits)
             }
             CompositeFilter::Single(filter) => {
                 let index = self.get(&filter.name).unwrap_or_else(|| {
@@ -182,6 +188,7 @@ impl<T: Indexable + Clone> QueryExecution<T> {
 pub enum CompositeFilter {
     And(Vec<CompositeFilter>),
     Or(Vec<CompositeFilter>),
+    Not(Box<CompositeFilter>),
     Single(Filter),
 }
 
@@ -234,6 +241,10 @@ impl CompositeFilter {
 
     pub fn and(filters: Vec<CompositeFilter>) -> Self {
         CompositeFilter::And(filters)
+    }
+
+    pub fn negate(filter: CompositeFilter) -> Self {
+        CompositeFilter::Not(Box::new(filter))
     }
 }
 

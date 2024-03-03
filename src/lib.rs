@@ -5,6 +5,7 @@ pub mod query;
 
 use bimap::BiHashMap;
 use ordered_float::OrderedFloat;
+use roaring::RoaringBitmap;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
@@ -86,9 +87,18 @@ impl Display for FieldValue {
 
 pub type DataItemId = usize;
 
-pub struct EntityStorage<T> {
+#[derive(Default)]
+struct EntityIndices {
     /// Indices available associated by data's field name
-    indices: HashMap<String, Index>,
+    field_indices: HashMap<String, Index>,
+
+    /// Bitmap including all items' positions
+    all: RoaringBitmap,
+}
+
+pub struct EntityStorage<T> {
+    /// Indices available for the given associated data
+    indices: EntityIndices,
 
     /// Mapping between position of a data item in the index and its ID
     position_id: BiHashMap<u32, DataItemId>,
@@ -116,6 +126,7 @@ impl<T: Indexable> EntityStorage<T> {
                 // Create index for the key value
                 let index = self
                     .indices
+                    .field_indices
                     .entry(property.name)
                     .or_insert(Index::from_type(&property.descriptor));
 
@@ -124,6 +135,7 @@ impl<T: Indexable> EntityStorage<T> {
 
             // Associate index position to the field ID
             self.position_id.insert(position, *id);
+            self.indices.all.insert(position);
         }
     }
 
@@ -368,6 +380,37 @@ mod tests {
         matches.sort_by(|a, b| a.id.cmp(&b.id));
 
         assert_eq!(matches, vec![ROGER.clone()]);
+    }
+
+    #[test]
+    fn applies_not_filter() {
+        // given
+        let storage = storage(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        // when
+        let execution = QueryExecution::new(CompositeFilter::negate(CompositeFilter::eq(
+            "sport",
+            FieldValue::String(Sport::Basketball.as_string()),
+        )));
+        let mut matches = engine.query(execution);
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches,
+            vec![
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone()
+            ]
+        );
     }
 
     #[test]
