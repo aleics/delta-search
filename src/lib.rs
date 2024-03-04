@@ -176,74 +176,30 @@ impl<T: Indexable + Clone> Engine<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::fixtures::{DecreaseScoreDelta, Player, Sport, SwitchSportsDelta};
+    use crate::fixtures::{
+        create_player_from_index, create_players_storage, create_random_players,
+        DecreaseScoreDelta, Player, Sport, SwitchSportsDelta,
+    };
     use crate::query::{CompositeFilter, Pagination, QueryExecution, Sort, SortDirection};
-    use crate::{Engine, EntityStorage, FieldValue};
+    use crate::{Engine, FieldValue};
     use lazy_static::lazy_static;
     use time::{Date, Month};
 
     lazy_static! {
-        static ref MICHAEL_JORDAN: Player = Player {
-            id: 0,
-            name: "Michael Jordan".to_string(),
-            score: 10.0,
-            sport: Sport::Basketball,
-            birth_date: "1963-02-17".to_string()
-        };
-        static ref LIONEL_MESSI: Player = Player {
-            id: 1,
-            name: "Lionel Messi".to_string(),
-            score: 9.0,
-            sport: Sport::Football,
-            birth_date: "1987-06-24".to_string()
-        };
-        static ref CRISTIANO_RONALDO: Player = Player {
-            id: 2,
-            name: "Cristiano Ronaldo".to_string(),
-            score: 9.0,
-            sport: Sport::Football,
-            birth_date: "1985-02-05".to_string()
-        };
-        static ref ROGER: Player = Player {
-            id: 3,
-            name: "Roger".to_string(),
-            score: 5.0,
-            sport: Sport::Football,
-            birth_date: "1996-05-01".to_string()
-        };
-    }
-
-    fn create_random_players(count: usize) -> Vec<Player> {
-        (0..count).map(create_player_from_index).collect()
-    }
-
-    fn create_player_from_index(index: usize) -> Player {
-        Player {
-            id: index,
-            name: format!("Player {}", index),
-            score: index as f64,
-            sport: if index % 2 == 0 {
-                Sport::Basketball
-            } else {
-                Sport::Football
-            },
-            birth_date: "2000-01-01".to_string(),
-        }
-    }
-
-    fn storage(data: Vec<Player>) -> EntityStorage<Player> {
-        let mut storage = EntityStorage::new();
-
-        storage.attach(data);
-        storage.index();
-
-        storage
+        static ref MICHAEL_JORDAN: Player =
+            Player::new(0, "Michael Jordan", Sport::Basketball, "1963-02-17").with_score(10.0);
+        static ref LIONEL_MESSI: Player =
+            Player::new(1, "Lionel Messi", Sport::Football, "1987-06-24").with_score(9.0);
+        static ref CRISTIANO_RONALDO: Player =
+            Player::new(2, "Cristiano Ronaldo", Sport::Football, "1985-02-05").with_score(9.0);
+        static ref ROGER: Player =
+            Player::new(3, "Roger", Sport::Football, "1996-05-01").with_score(5.0);
     }
 
     #[test]
     fn applies_enum_eq_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -267,7 +223,7 @@ mod tests {
     #[test]
     fn applies_date_ge_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -292,7 +248,7 @@ mod tests {
     #[test]
     fn applies_date_between_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -321,7 +277,7 @@ mod tests {
     #[test]
     fn applies_numeric_between_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -343,7 +299,7 @@ mod tests {
     #[test]
     fn applies_numeric_ge_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -364,7 +320,7 @@ mod tests {
     #[test]
     fn applies_numeric_le_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -385,7 +341,7 @@ mod tests {
     #[test]
     fn applies_not_filter() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -417,7 +373,7 @@ mod tests {
     #[test]
     fn applies_numeric_delta() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -425,8 +381,8 @@ mod tests {
         let engine = Engine::new(storage);
 
         let deltas = vec![
-            DecreaseScoreDelta::new(MICHAEL_JORDAN.id, MICHAEL_JORDAN.score),
-            DecreaseScoreDelta::new(LIONEL_MESSI.id, LIONEL_MESSI.score),
+            DecreaseScoreDelta::new(MICHAEL_JORDAN.id, MICHAEL_JORDAN.score.unwrap()),
+            DecreaseScoreDelta::new(LIONEL_MESSI.id, LIONEL_MESSI.score.unwrap()),
         ];
         let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
 
@@ -446,7 +402,7 @@ mod tests {
                 Player {
                     id: LIONEL_MESSI.id,
                     name: LIONEL_MESSI.name.to_string(),
-                    score: 8.0,
+                    score: Some(8.0),
                     sport: LIONEL_MESSI.sport.clone(),
                     birth_date: LIONEL_MESSI.birth_date.clone()
                 },
@@ -458,7 +414,7 @@ mod tests {
     #[test]
     fn applies_enum_delta() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -501,7 +457,7 @@ mod tests {
     #[test]
     fn applies_pagination() {
         // given
-        let storage = storage(create_random_players(20));
+        let storage = create_players_storage(create_random_players(20));
         let engine = Engine::new(storage);
 
         let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));

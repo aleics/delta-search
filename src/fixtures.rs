@@ -1,7 +1,34 @@
 use crate::index::{Indexable, IndexableValue};
 use crate::query::{Delta, DeltaChange};
-use crate::{DataItemId, FieldValue};
+use crate::{DataItemId, EntityStorage, FieldValue};
 use std::collections::HashSet;
+
+pub fn create_random_players(count: usize) -> Vec<Player> {
+    (0..count).map(create_player_from_index).collect()
+}
+
+pub fn create_player_from_index(index: usize) -> Player {
+    Player {
+        id: index,
+        name: format!("Player {}", index),
+        score: Some(index as f64),
+        sport: if index % 2 == 0 {
+            Sport::Basketball
+        } else {
+            Sport::Football
+        },
+        birth_date: "2000-01-01".to_string(),
+    }
+}
+
+pub fn create_players_storage(data: Vec<Player>) -> EntityStorage<Player> {
+    let mut storage = EntityStorage::new();
+
+    storage.attach(data);
+    storage.index();
+
+    storage
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Sport {
@@ -22,9 +49,26 @@ impl Sport {
 pub struct Player {
     pub id: usize,
     pub name: String,
-    pub score: f64,
+    pub score: Option<f64>,
     pub sport: Sport,
     pub birth_date: String,
+}
+
+impl Player {
+    pub fn new(id: usize, name: &str, sport: Sport, birth_date: &str) -> Self {
+        Player {
+            id,
+            name: name.to_string(),
+            score: None,
+            sport,
+            birth_date: birth_date.to_string(),
+        }
+    }
+
+    pub fn with_score(mut self, score: f64) -> Self {
+        self.score = Some(score);
+        self
+    }
 }
 
 impl Indexable for Player {
@@ -33,16 +77,21 @@ impl Indexable for Player {
     }
 
     fn index_values(&self) -> Vec<IndexableValue> {
-        vec![
+        let mut values = vec![
             IndexableValue::string("name".to_string(), self.name.to_string()),
-            IndexableValue::numeric("score".to_string(), self.score),
             IndexableValue::enumerate(
                 "sport".to_string(),
                 self.sport.as_string(),
                 HashSet::from_iter([Sport::Basketball.as_string(), Sport::Football.as_string()]),
             ),
             IndexableValue::date_iso("birth_date".to_string(), &self.birth_date),
-        ]
+        ];
+
+        if let Some(score) = &self.score {
+            values.push(IndexableValue::numeric("score".to_string(), *score));
+        }
+
+        values
     }
 }
 
@@ -67,7 +116,9 @@ impl Delta for DecreaseScoreDelta {
     }
 
     fn apply_data(&self, value: &mut Self::Value) {
-        value.score -= 1.0;
+        if let Some(score) = value.score.as_mut() {
+            *score -= 1.0;
+        }
     }
 }
 
