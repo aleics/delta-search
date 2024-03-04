@@ -194,6 +194,7 @@ mod tests {
             Player::new(2, "Cristiano Ronaldo", Sport::Football, "1985-02-05").with_score(9.0);
         static ref ROGER: Player =
             Player::new(3, "Roger", Sport::Football, "1996-05-01").with_score(5.0);
+        static ref DAVID: Player = Player::new(4, "David", Sport::Football, "1974-10-01");
     }
 
     #[test]
@@ -488,10 +489,11 @@ mod tests {
     #[test]
     fn applies_sort_numeric_asc() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             ROGER.clone(),
+            DAVID.clone(),
         ]);
         let engine = Engine::new(storage);
 
@@ -507,6 +509,7 @@ mod tests {
                 ROGER.clone(),
                 CRISTIANO_RONALDO.clone(),
                 MICHAEL_JORDAN.clone(),
+                DAVID.clone()
             ]
         );
     }
@@ -514,10 +517,11 @@ mod tests {
     #[test]
     fn applies_sort_numeric_desc() {
         // given
-        let storage = storage(vec![
+        let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             ROGER.clone(),
+            DAVID.clone(),
         ]);
         let engine = Engine::new(storage);
 
@@ -533,6 +537,7 @@ mod tests {
                 MICHAEL_JORDAN.clone(),
                 CRISTIANO_RONALDO.clone(),
                 ROGER.clone(),
+                DAVID.clone()
             ]
         );
     }
