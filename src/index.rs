@@ -3,7 +3,7 @@ use crate::{DataItemId, FieldValue};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::{MultiOps, RoaringBitmap};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound;
 use time::format_description::well_known::Iso8601;
 use time::Date;
@@ -162,6 +162,15 @@ impl Index {
             Index::Enum(index) => index.remove(value, position),
         }
     }
+
+    pub(crate) fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+        match self {
+            Index::String(index) => index.counts(items),
+            Index::Numeric(index) => index.counts(items),
+            Index::Date(_) => HashMap::new(), // TODO
+            Index::Enum(index) => index.counts(items),
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -188,6 +197,14 @@ impl StringIndex {
             .expect("String index only allows to remove string values.");
 
         self.inner.remove(value, position);
+    }
+
+    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+        self.inner
+            .counts(items)
+            .into_iter()
+            .map(|(value, count)| (value.to_string(), count))
+            .collect()
     }
 }
 
@@ -229,6 +246,14 @@ impl NumericIndex {
             .expect("Numeric index only allows to remove numeric values.");
 
         self.inner.remove(value, position);
+    }
+
+    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+        self.inner
+            .counts(items)
+            .into_iter()
+            .map(|(value, count)| (value.to_string(), count))
+            .collect()
     }
 }
 
@@ -376,6 +401,18 @@ impl EnumIndex {
 
         self.inner.remove(&index, position);
     }
+
+    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+        self.inner
+            .counts(items)
+            .into_iter()
+            .filter_map(|(value, count)| {
+                self.values
+                    .get_index(*value)
+                    .map(|value| (value.to_string(), count))
+            })
+            .collect()
+    }
 }
 
 impl FilterableIndex for EnumIndex {
@@ -427,6 +464,19 @@ impl<T: Ord> SortableIndex<T> {
         sorted.extend(items - found.union());
 
         sorted
+    }
+
+    fn counts(&self, items: &RoaringBitmap) -> Vec<(&T, u64)> {
+        let mut counts = Vec::new();
+
+        for (value, bitmap) in &self.0 {
+            let count = bitmap.intersection_len(items);
+            if count > 0 {
+                counts.push((value, count));
+            }
+        }
+
+        counts
     }
 
     fn get(&self, key: &T) -> Option<&RoaringBitmap> {

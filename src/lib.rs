@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use crate::index::Indexable;
+use crate::query::{FilterOption, OptionsQueryExecution};
 use index::Index;
 use query::QueryExecution;
 use time::{Date, OffsetDateTime, Time};
@@ -172,6 +173,10 @@ impl<T: Indexable + Clone> Engine<T> {
     pub fn query(&self, execution: QueryExecution<T>) -> Vec<T> {
         execution.run(&self.storage)
     }
+
+    pub fn options(&self, execution: OptionsQueryExecution<T>) -> Vec<FilterOption> {
+        execution.run(&self.storage)
+    }
 }
 
 #[cfg(test)]
@@ -180,9 +185,13 @@ mod tests {
         create_player_from_index, create_players_storage, create_random_players,
         DecreaseScoreDelta, Player, Sport, SwitchSportsDelta,
     };
-    use crate::query::{CompositeFilter, Pagination, QueryExecution, Sort, SortDirection};
+    use crate::query::{
+        CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution, Sort,
+        SortDirection,
+    };
     use crate::{Engine, FieldValue};
     use lazy_static::lazy_static;
+    use std::collections::HashMap;
     use time::{Date, Month};
 
     lazy_static! {
@@ -198,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_enum_eq_filter() {
+    fn query_enum_eq_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -222,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_date_ge_filter() {
+    fn query_date_ge_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -247,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_date_between_filter() {
+    fn query_date_between_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -276,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_numeric_between_filter() {
+    fn query_numeric_between_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -298,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_numeric_ge_filter() {
+    fn query_numeric_ge_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -319,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_numeric_le_filter() {
+    fn query_numeric_le_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -340,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_not_filter() {
+    fn query_not_filter() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -372,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_numeric_delta() {
+    fn query_numeric_delta() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -413,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_enum_delta() {
+    fn query_enum_delta() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -456,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_pagination() {
+    fn query_pagination() {
         // given
         let storage = create_players_storage(create_random_players(20));
         let engine = Engine::new(storage);
@@ -487,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_sort_numeric_asc() {
+    fn query_sort_numeric_asc() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -515,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_sort_numeric_desc() {
+    fn query_sort_numeric_desc() {
         // given
         let storage = create_players_storage(vec![
             MICHAEL_JORDAN.clone(),
@@ -538,6 +547,103 @@ mod tests {
                 CRISTIANO_RONALDO.clone(),
                 ROGER.clone(),
                 DAVID.clone()
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_all_filter_options() {
+        // given
+        let storage = create_players_storage(vec![
+            MICHAEL_JORDAN.clone(),
+            CRISTIANO_RONALDO.clone(),
+            LIONEL_MESSI.clone(),
+            ROGER.clone(),
+            DAVID.clone(),
+        ]);
+        let engine = Engine::new(storage);
+
+        // when
+        let mut filter_options = engine.options(OptionsQueryExecution::new());
+
+        // then
+        filter_options.sort_by(|a, b| a.field.cmp(&b.field));
+
+        assert_eq!(
+            filter_options,
+            vec![
+                FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
+                FilterOption::new(
+                    "name".to_string(),
+                    HashMap::from_iter([
+                        ("Cristiano Ronaldo".to_string(), 1),
+                        ("Michael Jordan".to_string(), 1),
+                        ("Lionel Messi".to_string(), 1),
+                        ("Roger".to_string(), 1),
+                        ("David".to_string(), 1)
+                    ])
+                ),
+                FilterOption::new(
+                    "score".to_string(),
+                    HashMap::from_iter([
+                        ("5".to_string(), 1),
+                        ("9".to_string(), 2),
+                        ("10".to_string(), 1)
+                    ])
+                ),
+                FilterOption::new(
+                    "sport".to_string(),
+                    HashMap::from_iter([
+                        ("basketball".to_string(), 1),
+                        ("football".to_string(), 4)
+                    ])
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_all_filter_options_with_filter() {
+        // given
+        let storage = create_players_storage(vec![
+            MICHAEL_JORDAN.clone(),
+            CRISTIANO_RONALDO.clone(),
+            LIONEL_MESSI.clone(),
+            ROGER.clone(),
+            DAVID.clone(),
+        ]);
+        let engine = Engine::new(storage);
+        let filter = CompositeFilter::ge("score", FieldValue::numeric(8.0));
+
+        // when
+        let mut filter_options = engine.options(OptionsQueryExecution::new().with_filter(filter));
+
+        // then
+        filter_options.sort_by(|a, b| a.field.cmp(&b.field));
+
+        assert_eq!(
+            filter_options,
+            vec![
+                FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
+                FilterOption::new(
+                    "name".to_string(),
+                    HashMap::from_iter([
+                        ("Cristiano Ronaldo".to_string(), 1),
+                        ("Michael Jordan".to_string(), 1),
+                        ("Lionel Messi".to_string(), 1)
+                    ])
+                ),
+                FilterOption::new(
+                    "score".to_string(),
+                    HashMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)])
+                ),
+                FilterOption::new(
+                    "sport".to_string(),
+                    HashMap::from_iter([
+                        ("basketball".to_string(), 1),
+                        ("football".to_string(), 2)
+                    ])
+                )
             ]
         );
     }

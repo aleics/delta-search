@@ -3,6 +3,18 @@ use crate::{DataItemId, EntityIndices, EntityStorage, FieldValue};
 use roaring::RoaringBitmap;
 use std::collections::HashMap;
 
+#[derive(Debug, PartialEq)]
+pub struct FilterOption {
+    pub field: String,
+    pub values: HashMap<String, u64>,
+}
+
+impl FilterOption {
+    pub(crate) fn new(field: String, values: HashMap<String, u64>) -> Self {
+        FilterOption { field, values }
+    }
+}
+
 struct QueryIndices<'a> {
     stored: &'a EntityIndices,
     deltas: HashMap<String, Index>,
@@ -84,6 +96,69 @@ impl<'a> QueryIndices<'a> {
             .expect("Sort by criteria does not have an index.");
 
         index.sort(items, &sort.direction)
+    }
+
+    fn compute_filter_options(&self, hits: RoaringBitmap) -> Vec<FilterOption> {
+        let mut filter_options = Vec::new();
+
+        for (field, index) in &self.deltas {
+            filter_options.push(FilterOption::new(field.to_string(), index.counts(&hits)));
+        }
+
+        for (field, index) in &self.stored.field_indices {
+            if !self.deltas.contains_key(field) {
+                filter_options.push(FilterOption::new(field.to_string(), index.counts(&hits)))
+            }
+        }
+
+        filter_options
+    }
+}
+
+pub struct OptionsQueryExecution<T> {
+    filter: Option<CompositeFilter>,
+    deltas: Vec<BoxedDelta<T>>,
+}
+
+impl<T: Indexable> OptionsQueryExecution<T> {
+    pub fn new() -> Self {
+        OptionsQueryExecution::default()
+    }
+
+    pub fn with_filter(mut self, filter: CompositeFilter) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    pub fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
+    where
+        D: Delta<Value = T> + 'static,
+    {
+        for delta in deltas {
+            self.deltas.push(Box::new(delta));
+        }
+        self
+    }
+
+    pub fn run(self, storage: &EntityStorage<T>) -> Vec<FilterOption> {
+        let indices = QueryIndices::new(&storage.indices).attach_deltas(&self.deltas, storage);
+
+        let filter_result = self
+            .filter
+            .as_ref()
+            .map(|filter| indices.execute_filter(filter))
+            .unwrap_or_else(|| FilterResult::new(indices.stored.all.clone()));
+
+        indices.compute_filter_options(filter_result.hits)
+    }
+}
+
+impl<T> Default for OptionsQueryExecution<T> {
+    fn default() -> Self {
+        OptionsQueryExecution {
+            filter: None,
+            deltas: Vec::new(),
+        }
     }
 }
 

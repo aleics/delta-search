@@ -8,10 +8,16 @@ pub fn create_random_players(count: usize) -> Vec<Player> {
 }
 
 pub fn create_player_from_index(index: usize) -> Player {
+    let base = if index % 2 == 0 {
+        10.0
+    } else {
+        2.0 * index as f64
+    };
+
     Player {
         id: index,
-        name: format!("Player {}", index),
-        score: Some(index as f64),
+        name: format!("Player {}", base),
+        score: Some(base),
         sport: if index % 2 == 0 {
             Sport::Basketball
         } else {
