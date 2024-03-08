@@ -36,6 +36,36 @@ pub fn create_players_storage(data: Vec<Player>) -> EntityStorage<Player> {
     storage
 }
 
+pub fn decrease_score_deltas(data: &[Player], size: usize) -> Vec<DecreaseScoreDelta> {
+    let mut deltas = Vec::new();
+
+    for player in data.iter().take(size) {
+        if let Some(score) = player.score {
+            deltas.push(DecreaseScoreDelta::new(player.id, score));
+        }
+    }
+
+    deltas
+}
+
+pub fn switch_sports_deltas(data: &[Player], size: usize) -> Vec<SwitchSportsDelta> {
+    let mut deltas = Vec::new();
+
+    for player in data.iter().take(size) {
+        let new_sport = match player.sport {
+            Sport::Basketball => Sport::Football,
+            Sport::Football => Sport::Basketball,
+        };
+        deltas.push(SwitchSportsDelta::new(
+            player.id,
+            player.sport.clone(),
+            new_sport,
+        ));
+    }
+
+    deltas
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Sport {
     Basketball,
@@ -101,14 +131,20 @@ impl Indexable for Player {
     }
 }
 
-pub(crate) struct DecreaseScoreDelta {
+#[derive(Clone)]
+pub struct DecreaseScoreDelta {
     id: DataItemId,
-    score: f64,
+    before: f64,
+    after: f64,
 }
 
 impl DecreaseScoreDelta {
     pub(crate) fn new(id: DataItemId, score: f64) -> Self {
-        DecreaseScoreDelta { id, score }
+        DecreaseScoreDelta {
+            id,
+            before: score,
+            after: score - 1.0,
+        }
     }
 }
 
@@ -117,30 +153,27 @@ impl Delta for DecreaseScoreDelta {
 
     fn change(&self) -> DeltaChange {
         DeltaChange::new(self.id, "score".to_string())
-            .before(FieldValue::numeric(self.score))
-            .after(FieldValue::numeric(self.score - 1.0))
+            .before(FieldValue::numeric(self.before))
+            .after(FieldValue::numeric(self.after))
     }
 
     fn apply_data(&self, value: &mut Self::Value) {
         if let Some(score) = value.score.as_mut() {
-            *score -= 1.0;
+            *score = self.after;
         }
     }
 }
 
-pub(crate) struct SwitchSportsDelta {
+#[derive(Clone)]
+pub struct SwitchSportsDelta {
     id: DataItemId,
-    current: Sport,
-    new_sport: Sport,
+    before: Sport,
+    after: Sport,
 }
 
 impl SwitchSportsDelta {
-    pub(crate) fn new(id: DataItemId, current: Sport, new_sport: Sport) -> Self {
-        SwitchSportsDelta {
-            id,
-            current,
-            new_sport,
-        }
+    pub(crate) fn new(id: DataItemId, before: Sport, after: Sport) -> Self {
+        SwitchSportsDelta { id, before, after }
     }
 }
 
@@ -149,11 +182,11 @@ impl Delta for SwitchSportsDelta {
 
     fn change(&self) -> DeltaChange {
         DeltaChange::new(self.id, "sport".to_string())
-            .before(FieldValue::string(self.current.as_string()))
-            .after(FieldValue::string(self.new_sport.as_string()))
+            .before(FieldValue::string(self.before.as_string()))
+            .after(FieldValue::string(self.after.as_string()))
     }
 
     fn apply_data(&self, value: &mut Self::Value) {
-        value.sport = self.new_sport.clone();
+        value.sport = self.after.clone();
     }
 }

@@ -1,7 +1,10 @@
 #![feature(test)]
 extern crate test;
 
-use delta_db::fixtures::{create_players_storage, create_random_players, Sport};
+use delta_db::fixtures::{
+    create_players_storage, create_random_players, decrease_score_deltas, switch_sports_deltas,
+    Sport,
+};
 use delta_db::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
 };
@@ -53,7 +56,7 @@ fn bench_filter_or(b: &mut Bencher) {
     let engine = Engine::new(create_players_storage(create_random_players(COUNT)));
 
     b.iter(move || {
-        let filter = CompositeFilter::and(vec![
+        let filter = CompositeFilter::or(vec![
             CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
             CompositeFilter::between(
                 "score",
@@ -88,4 +91,22 @@ fn bench_filter_options(b: &mut Bencher) {
     let engine = Engine::new(create_players_storage(create_random_players(COUNT)));
 
     b.iter(move || engine.options(OptionsQueryExecution::new()));
+}
+
+#[bench]
+fn bench_apply_deltas(b: &mut Bencher) {
+    let players = create_random_players(COUNT);
+    let decrease_score_deltas = decrease_score_deltas(&players, COUNT);
+    let switch_sports_deltas = switch_sports_deltas(&players, COUNT);
+
+    let engine = Engine::new(create_players_storage(players));
+
+    b.iter(move || {
+        let query = QueryExecution::new()
+            .with_deltas(decrease_score_deltas.clone())
+            .with_deltas(switch_sports_deltas.clone())
+            .with_pagination(*PAGINATION);
+
+        engine.query(query);
+    });
 }

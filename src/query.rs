@@ -35,19 +35,24 @@ impl<'a> QueryIndices<'a> {
         for delta in deltas {
             let change = delta.change();
 
+            // Clone the existing index into the `deltas` related index
             if let Some(current) = self.stored.field_indices.get(&change.scope.field_name) {
-                if let Some(position) = storage.get_position_by_id(&change.scope.id) {
-                    let mut dynamic = current.clone();
+                if !self.deltas.contains_key(&change.scope.field_name) {
+                    self.deltas
+                        .insert(change.scope.field_name.to_string(), current.clone());
+                }
+            }
 
+            // Apply the change to the delta related index
+            if let Some(delta_index) = self.deltas.get_mut(&change.scope.field_name) {
+                if let Some(position) = storage.get_position_by_id(&change.scope.id) {
                     if let Some(before) = change.before.as_ref() {
-                        dynamic.remove(before, *position);
+                        delta_index.remove(before, *position);
                     }
 
                     if let Some(after) = change.after {
-                        dynamic.put(after, *position);
+                        delta_index.put(after, *position);
                     }
-
-                    self.deltas.insert(change.scope.field_name, dynamic);
                 }
             }
         }
