@@ -9,7 +9,7 @@ use roaring::RoaringBitmap;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
-use crate::index::Indexable;
+use crate::index::{Indexable, IndexableValue};
 use crate::query::{FilterOption, OptionsQueryExecution};
 use index::Index;
 use query::QueryExecution;
@@ -97,6 +97,32 @@ struct EntityIndices {
     all: RoaringBitmap,
 }
 
+impl EntityIndices {
+    fn clear(&mut self) {
+        self.field_indices.clear();
+        self.all.clear();
+    }
+
+    fn add_values(&mut self, values: Vec<IndexableValue>, position: u32) {
+        for index_value in values {
+            // Create index for the key value
+            let index = self
+                .field_indices
+                .entry(index_value.name)
+                .or_insert(Index::from_type(&index_value.descriptor));
+
+            index.put(index_value.value, position);
+        }
+        self.all.insert(position);
+    }
+
+    fn remove(&mut self, position: u32) {
+        for index in self.field_indices.values_mut() {
+            index.remove_item(position);
+        }
+    }
+}
+
 pub struct EntityStorage<T> {
     /// Indices available for the given associated data
     indices: EntityIndices,
@@ -120,23 +146,39 @@ impl<T: Indexable> EntityStorage<T> {
     }
 
     pub fn index(&mut self) {
+        self.indices.clear();
+        self.position_id.clear();
+
         for (position, (id, item)) in self.data.iter().enumerate() {
             let position = position as u32;
 
-            for property in item.index_values() {
-                // Create index for the key value
-                let index = self
-                    .indices
-                    .field_indices
-                    .entry(property.name)
-                    .or_insert(Index::from_type(&property.descriptor));
-
-                index.put(property.value, position);
-            }
+            self.indices.add_values(item.index_values(), position);
 
             // Associate index position to the field ID
             self.position_id.insert(position, *id);
-            self.indices.all.insert(position);
+        }
+    }
+
+    fn add(&mut self, item: T) {
+        let id = item.id();
+
+        let position = self
+            .position_id
+            .get_by_right(&id)
+            .copied()
+            .unwrap_or(self.position_id.len() as u32);
+
+        self.indices.add_values(item.index_values(), position);
+
+        // Associate index position to the field ID
+        self.data.insert(id, item);
+        self.position_id.insert(position, id);
+    }
+
+    fn remove(&mut self, id: &DataItemId) {
+        if let Some((position, _)) = self.position_id.remove_by_right(id) {
+            self.data.remove(id);
+            self.indices.remove(position);
         }
     }
 
@@ -176,6 +218,14 @@ impl<T: Indexable + Clone> Engine<T> {
 
     pub fn options(&self, execution: OptionsQueryExecution<T>) -> Vec<FilterOption> {
         execution.run(&self.storage)
+    }
+
+    pub fn add(&mut self, item: T) {
+        self.storage.add(item);
+    }
+
+    pub fn remove(&mut self, id: &DataItemId) {
+        self.storage.remove(id);
     }
 }
 
@@ -646,5 +696,51 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn add_item() {
+        // given
+        let storage = create_players_storage(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+        ]);
+        let mut engine = Engine::new(storage);
+
+        // when
+        engine.add(ROGER.clone());
+
+        // then
+        let query = QueryExecution::new().with_filter(CompositeFilter::eq(
+            "name",
+            FieldValue::String(ROGER.name.to_string()),
+        ));
+        let matches = engine.query(query);
+
+        assert_eq!(matches, vec![ROGER.clone()]);
+    }
+
+    #[test]
+    fn remove_item() {
+        // given
+        let storage = create_players_storage(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+        ]);
+        let mut engine = Engine::new(storage);
+
+        // when
+        engine.remove(&CRISTIANO_RONALDO.id);
+
+        // then
+        let query = QueryExecution::new().with_filter(CompositeFilter::eq(
+            "name",
+            FieldValue::String(CRISTIANO_RONALDO.name.to_string()),
+        ));
+        let matches = engine.query(query);
+
+        assert!(matches.is_empty());
     }
 }

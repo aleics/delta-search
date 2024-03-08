@@ -163,6 +163,15 @@ impl Index {
         }
     }
 
+    pub(crate) fn remove_item(&mut self, position: u32) {
+        match self {
+            Index::String(index) => index.inner.remove_item(position),
+            Index::Numeric(index) => index.inner.remove_item(position),
+            Index::Date(index) => index.inner.remove_item(position),
+            Index::Enum(index) => index.inner.remove_item(position),
+        }
+    }
+
     pub(crate) fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
         match self {
             Index::String(index) => index.counts(items),
@@ -490,6 +499,12 @@ impl<T: Ord> SortableIndex<T> {
 
     fn remove(&mut self, key: &T, position: u32) {
         if let Some(bitmap) = self.0.get_mut(key) {
+            bitmap.remove(position);
+        }
+    }
+
+    fn remove_item(&mut self, position: u32) {
+        for bitmap in self.0.values_mut() {
             bitmap.remove(position);
         }
     }
