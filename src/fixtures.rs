@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::index::{Indexable, IndexableValue};
 use crate::query::{Delta, DeltaChange};
 use crate::{DataItemId, EntityStorage, FieldValue};
@@ -66,7 +68,7 @@ pub fn switch_sports_deltas(data: &[Player], size: usize) -> Vec<SwitchSportsDel
     deltas
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Sport {
     Basketball,
     Football,
@@ -81,7 +83,7 @@ impl Sport {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: usize,
     pub name: String,
