@@ -19,6 +19,117 @@ const ID_TO_POSITION_DB_NAME: &str = "id_to_position";
 
 const ALL_ITEMS_KEY: &str = "__all";
 
+pub enum EntityStorage<T> {
+    Disk(DiskStorage<T>),
+    InMemory(InMemoryStorage<T>),
+}
+
+impl<T: Indexable + Serialize> EntityStorage<T> {
+    pub fn carry(&mut self, data: Vec<T>) {
+        match self {
+            EntityStorage::Disk(disk) => disk.carry(data),
+            EntityStorage::InMemory(in_memory) => in_memory.carry(data),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        match self {
+            EntityStorage::Disk(disk) => disk.clear(),
+            EntityStorage::InMemory(in_memory) => in_memory.clear(),
+        }
+    }
+
+    pub fn add(&mut self, item: T) {
+        match self {
+            EntityStorage::Disk(disk) => disk.add(&[item]),
+            EntityStorage::InMemory(in_memory) => in_memory.add(item),
+        }
+    }
+
+    pub fn remove(&mut self, id: &DataItemId) {
+        match self {
+            EntityStorage::Disk(disk) => disk.remove(std::slice::from_ref(id)),
+            EntityStorage::InMemory(in_memory) => in_memory.remove(id),
+        }
+    }
+
+    pub fn get_id_by_position(&self, position: &u32) -> Option<DataItemId> {
+        match self {
+            EntityStorage::Disk(disk) => disk.get_id_by_position(position),
+            EntityStorage::InMemory(in_memory) => in_memory.get_id_by_position(position).copied(),
+        }
+    }
+
+    pub fn get_position_by_id(&self, id: &DataItemId) -> Option<u32> {
+        match self {
+            EntityStorage::Disk(disk) => disk.get_position_by_id(id),
+            EntityStorage::InMemory(in_memory) => in_memory.get_position_by_id(id).copied(),
+        }
+    }
+
+    pub fn read_indices(&self, fields: &[String]) -> EntityIndices {
+        match self {
+            EntityStorage::Disk(disk) => disk.read_indices(fields),
+            EntityStorage::InMemory(in_memory) => in_memory.read_indices(fields),
+        }
+    }
+
+    pub fn read_all_indices(&self) -> EntityIndices {
+        match self {
+            EntityStorage::Disk(disk) => disk.read_all_indices(),
+            EntityStorage::InMemory(in_memory) => in_memory.read_all_indices(),
+        }
+    }
+}
+
+impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
+    pub fn read(&self, id: &DataItemId) -> Option<T> {
+        match self {
+            EntityStorage::Disk(disk) => disk.read_by_id(id),
+            EntityStorage::InMemory(in_memory) => in_memory.read_by_id(id),
+        }
+    }
+}
+
+pub struct StorageBuilder {
+    name: Option<String>,
+    kind: StorageKind,
+}
+
+impl StorageBuilder {
+    pub fn disk(name: &str) -> Self {
+        StorageBuilder {
+            name: Some(name.into()),
+            kind: StorageKind::Disk,
+        }
+    }
+
+    pub fn in_memory() -> Self {
+        StorageBuilder {
+            name: None,
+            kind: StorageKind::InMemory,
+        }
+    }
+
+    pub fn build<T: Indexable + 'static>(&self) -> EntityStorage<T> {
+        match self.kind {
+            StorageKind::Disk => {
+                let name = self.name
+                    .as_ref()
+                    .expect("You must specify a name for your entity to be stored in disk.");
+
+                EntityStorage::Disk(DiskStorage::init(name))
+            }
+            StorageKind::InMemory => EntityStorage::InMemory(InMemoryStorage::new()),
+        }
+    }
+}
+
+pub enum StorageKind {
+    Disk,
+    InMemory,
+}
+
 pub struct DiskStorage<T> {
     env: Env,
     data: Database<OwnedType<DataItemId>, SerdeBincode<T>>,
