@@ -1,20 +1,21 @@
+#![feature(iter_array_chunks)]
+
+use std::fmt::{Display, Formatter};
+
+use ordered_float::OrderedFloat;
+use serde::{Deserialize, Serialize};
+use time::{Date, OffsetDateTime, Time};
+
+use query::QueryExecution;
+use storage::EntityStorage;
+
+use crate::index::Indexable;
+use crate::query::{FilterOption, OptionsQueryExecution};
+
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
 pub mod index;
 pub mod query;
-
-use bimap::BiHashMap;
-use ordered_float::OrderedFloat;
-use roaring::RoaringBitmap;
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-
-use crate::index::{Indexable, IndexableValue};
-use crate::query::{FilterOption, OptionsQueryExecution};
-use index::Index;
-use query::QueryExecution;
-use time::{Date, OffsetDateTime, Time};
-
 pub mod storage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,18 +121,20 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> Engine<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use lazy_static::lazy_static;
+    use time::{Date, Month};
+
+    use crate::{Engine, FieldValue};
     use crate::fixtures::{
-        create_player_from_index, create_players_storage, create_random_players,
+        create_player_from_index, create_players_in_memory_storage, create_random_players,
         DecreaseScoreDelta, Player, Sport, SwitchSportsDelta,
     };
     use crate::query::{
         CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution, Sort,
         SortDirection,
     };
-    use crate::{Engine, FieldValue};
-    use lazy_static::lazy_static;
-    use std::collections::HashMap;
-    use time::{Date, Month};
 
     lazy_static! {
         static ref MICHAEL_JORDAN: Player =
@@ -148,7 +151,7 @@ mod tests {
     #[test]
     fn query_enum_eq_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -172,7 +175,7 @@ mod tests {
     #[test]
     fn query_date_ge_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -197,7 +200,7 @@ mod tests {
     #[test]
     fn query_date_between_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -226,7 +229,7 @@ mod tests {
     #[test]
     fn query_numeric_between_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -248,7 +251,7 @@ mod tests {
     #[test]
     fn query_numeric_ge_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -269,7 +272,7 @@ mod tests {
     #[test]
     fn query_numeric_le_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             ROGER.clone(),
@@ -290,7 +293,7 @@ mod tests {
     #[test]
     fn query_not_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -314,7 +317,7 @@ mod tests {
             vec![
                 LIONEL_MESSI.clone(),
                 CRISTIANO_RONALDO.clone(),
-                ROGER.clone()
+                ROGER.clone(),
             ]
         );
     }
@@ -322,7 +325,7 @@ mod tests {
     #[test]
     fn query_numeric_delta() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -353,9 +356,9 @@ mod tests {
                     name: LIONEL_MESSI.name.to_string(),
                     score: Some(8.0),
                     sport: LIONEL_MESSI.sport.clone(),
-                    birth_date: LIONEL_MESSI.birth_date.clone()
+                    birth_date: LIONEL_MESSI.birth_date.clone(),
                 },
-                CRISTIANO_RONALDO.clone()
+                CRISTIANO_RONALDO.clone(),
             ]
         );
     }
@@ -363,7 +366,7 @@ mod tests {
     #[test]
     fn query_enum_delta() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -395,10 +398,10 @@ mod tests {
                     name: MICHAEL_JORDAN.name.to_string(),
                     score: MICHAEL_JORDAN.score,
                     sport: Sport::Football,
-                    birth_date: MICHAEL_JORDAN.birth_date.clone()
+                    birth_date: MICHAEL_JORDAN.birth_date.clone(),
                 },
                 LIONEL_MESSI.clone(),
-                CRISTIANO_RONALDO.clone()
+                CRISTIANO_RONALDO.clone(),
             ]
         );
     }
@@ -406,7 +409,7 @@ mod tests {
     #[test]
     fn query_pagination() {
         // given
-        let storage = create_players_storage(create_random_players(20));
+        let storage = create_players_in_memory_storage(create_random_players(20));
         let engine = Engine::new(storage);
 
         let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
@@ -429,7 +432,7 @@ mod tests {
                 create_player_from_index(7),
                 create_player_from_index(9),
                 create_player_from_index(11),
-                create_player_from_index(13)
+                create_player_from_index(13),
             ]
         );
     }
@@ -437,7 +440,7 @@ mod tests {
     #[test]
     fn query_sort_numeric_asc() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             ROGER.clone(),
@@ -457,7 +460,7 @@ mod tests {
                 ROGER.clone(),
                 CRISTIANO_RONALDO.clone(),
                 MICHAEL_JORDAN.clone(),
-                DAVID.clone()
+                DAVID.clone(),
             ]
         );
     }
@@ -465,7 +468,7 @@ mod tests {
     #[test]
     fn query_sort_numeric_desc() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             ROGER.clone(),
@@ -485,7 +488,7 @@ mod tests {
                 MICHAEL_JORDAN.clone(),
                 CRISTIANO_RONALDO.clone(),
                 ROGER.clone(),
-                DAVID.clone()
+                DAVID.clone(),
             ]
         );
     }
@@ -493,7 +496,7 @@ mod tests {
     #[test]
     fn compute_all_filter_options() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             LIONEL_MESSI.clone(),
@@ -520,7 +523,7 @@ mod tests {
                         ("Lionel Messi".to_string(), 1),
                         ("Roger".to_string(), 1),
                         ("David".to_string(), 1)
-                    ])
+                    ]),
                 ),
                 FilterOption::new(
                     "score".to_string(),
@@ -528,15 +531,15 @@ mod tests {
                         ("5".to_string(), 1),
                         ("9".to_string(), 2),
                         ("10".to_string(), 1)
-                    ])
+                    ]),
                 ),
                 FilterOption::new(
                     "sport".to_string(),
                     HashMap::from_iter([
                         ("basketball".to_string(), 1),
                         ("football".to_string(), 4)
-                    ])
-                )
+                    ]),
+                ),
             ]
         );
     }
@@ -544,7 +547,7 @@ mod tests {
     #[test]
     fn compute_all_filter_options_with_filter() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             CRISTIANO_RONALDO.clone(),
             LIONEL_MESSI.clone(),
@@ -570,19 +573,19 @@ mod tests {
                         ("Cristiano Ronaldo".to_string(), 1),
                         ("Michael Jordan".to_string(), 1),
                         ("Lionel Messi".to_string(), 1)
-                    ])
+                    ]),
                 ),
                 FilterOption::new(
                     "score".to_string(),
-                    HashMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)])
+                    HashMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)]),
                 ),
                 FilterOption::new(
                     "sport".to_string(),
                     HashMap::from_iter([
                         ("basketball".to_string(), 1),
                         ("football".to_string(), 2)
-                    ])
-                )
+                    ]),
+                ),
             ]
         );
     }
@@ -590,7 +593,7 @@ mod tests {
     #[test]
     fn add_item() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),
@@ -613,7 +616,7 @@ mod tests {
     #[test]
     fn remove_item() {
         // given
-        let storage = create_players_storage(vec![
+        let storage = create_players_in_memory_storage(vec![
             MICHAEL_JORDAN.clone(),
             LIONEL_MESSI.clone(),
             CRISTIANO_RONALDO.clone(),

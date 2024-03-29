@@ -1,7 +1,11 @@
-use crate::index::{Index, Indexable};
-use crate::{DataItemId, EntityIndices, EntityStorage, FieldValue};
-use roaring::RoaringBitmap;
 use std::collections::HashMap;
+
+use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
+
+use crate::index::{Index, Indexable};
+use crate::storage::{EntityIndices, EntityStorage};
+use crate::{DataItemId, FieldValue};
 
 #[derive(Debug, PartialEq)]
 pub struct FilterOption {
@@ -15,13 +19,13 @@ impl FilterOption {
     }
 }
 
-struct QueryIndices<'a> {
-    stored: &'a EntityIndices,
+struct QueryIndices {
+    stored: EntityIndices,
     deltas: HashMap<String, Index>,
 }
 
-impl<'a> QueryIndices<'a> {
-    fn new(stored: &'a EntityIndices) -> Self {
+impl QueryIndices {
+    fn new(stored: EntityIndices) -> Self {
         QueryIndices {
             stored,
             deltas: HashMap::new(),
@@ -30,7 +34,7 @@ impl<'a> QueryIndices<'a> {
 
     fn attach_deltas<T>(mut self, deltas: &[BoxedDelta<T>], storage: &EntityStorage<T>) -> Self
     where
-        T: Indexable,
+        T: Indexable + Serialize,
     {
         for delta in deltas {
             let change = delta.change();
@@ -125,7 +129,7 @@ pub struct OptionsQueryExecution<T> {
     deltas: Vec<BoxedDelta<T>>,
 }
 
-impl<T: Indexable> OptionsQueryExecution<T> {
+impl<T: Indexable + Serialize> OptionsQueryExecution<T> {
     pub fn new() -> Self {
         OptionsQueryExecution::default()
     }
@@ -174,7 +178,7 @@ pub struct QueryExecution<T> {
     pagination: Option<Pagination>,
 }
 
-impl<T: Indexable + Clone> QueryExecution<T> {
+impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<T> {
     pub fn new() -> Self {
         QueryExecution::default()
     }
@@ -229,7 +233,6 @@ impl<T: Indexable + Clone> QueryExecution<T> {
                 .execute_sort(&filter_result.hits, sort)
                 .iter()
                 .flat_map(|position| storage.get_id_by_position(position))
-                .copied()
                 .collect();
         }
 
@@ -237,7 +240,6 @@ impl<T: Indexable + Clone> QueryExecution<T> {
             .hits
             .iter()
             .flat_map(|position| storage.get_id_by_position(&position))
-            .copied()
             .collect()
     }
 
@@ -254,7 +256,7 @@ impl<T: Indexable + Clone> QueryExecution<T> {
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            if let Some(mut item) = storage.data.get(id).cloned() {
+            if let Some(mut item) = storage.read(id) {
                 if let Some(deltas) = deltas_by_id.get(id) {
                     for delta in deltas {
                         delta.apply_data(&mut item);

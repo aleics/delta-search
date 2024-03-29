@@ -1,9 +1,11 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::index::{Indexable, IndexableValue};
 use crate::query::{Delta, DeltaChange};
-use crate::{DataItemId, EntityStorage, FieldValue};
-use std::collections::HashSet;
+use crate::storage::{EntityStorage, StorageBuilder};
+use crate::{DataItemId, FieldValue};
 
 pub fn create_random_players(count: usize) -> Vec<Player> {
     (0..count).map(create_player_from_index).collect()
@@ -29,11 +31,9 @@ pub fn create_player_from_index(index: usize) -> Player {
     }
 }
 
-pub fn create_players_storage(data: Vec<Player>) -> EntityStorage<Player> {
-    let mut storage = EntityStorage::new();
-
-    storage.attach(data);
-    storage.index();
+pub fn create_players_in_memory_storage(data: Vec<Player>) -> EntityStorage<Player> {
+    let mut storage = StorageBuilder::in_memory().build();
+    storage.carry(data);
 
     storage
 }
@@ -159,6 +159,8 @@ impl Delta for DecreaseScoreDelta {
             .after(FieldValue::numeric(self.after))
     }
 
+    // TODO: if the DB should be accessible via REST API, this would not work
+    // TODO: we could serialise the provided data as a simple key-value map, and change the values on the map
     fn apply_data(&self, value: &mut Self::Value) {
         if let Some(score) = value.score.as_mut() {
             *score = self.after;
@@ -174,7 +176,7 @@ pub struct SwitchSportsDelta {
 }
 
 impl SwitchSportsDelta {
-    pub(crate) fn new(id: DataItemId, before: Sport, after: Sport) -> Self {
+    pub fn new(id: DataItemId, before: Sport, after: Sport) -> Self {
         SwitchSportsDelta { id, before, after }
     }
 }
