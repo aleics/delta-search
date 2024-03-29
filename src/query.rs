@@ -264,7 +264,7 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            if let Some(mut item) = storage.read(id) {
+            if let Some(mut item) = storage.read_by_id(id) {
                 if let Some(deltas) = deltas_by_id.get(id) {
                     for delta in deltas {
                         delta.apply_data(&mut item);

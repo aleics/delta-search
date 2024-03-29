@@ -16,71 +16,6 @@ const DOCUMENTS_DB_NAME: &str = "documents";
 
 const ALL_ITEMS_KEY: &str = "__all";
 
-pub enum EntityStorage<T> {
-    Disk(DiskStorage<T>),
-    InMemory(InMemoryStorage<T>),
-}
-
-impl<T: Indexable + Serialize> EntityStorage<T> {
-    pub fn carry(&mut self, data: Vec<T>) {
-        match self {
-            EntityStorage::Disk(disk) => disk.carry(data),
-            EntityStorage::InMemory(in_memory) => in_memory.carry(data),
-        }
-    }
-
-    pub fn clear(&mut self) {
-        match self {
-            EntityStorage::Disk(disk) => disk.clear(),
-            EntityStorage::InMemory(in_memory) => in_memory.clear(),
-        }
-    }
-
-    pub fn add_multiple(&mut self, data: Vec<T>) {
-        match self {
-            EntityStorage::Disk(disk) => disk.add_multiple(data),
-            EntityStorage::InMemory(in_memory) => in_memory.add_multiple(data),
-        }
-    }
-
-    pub fn add(&mut self, item: T) {
-        match self {
-            EntityStorage::Disk(disk) => disk.add(&[item]),
-            EntityStorage::InMemory(in_memory) => in_memory.add(item),
-        }
-    }
-
-    pub fn remove(&mut self, id: &DataItemId) {
-        match self {
-            EntityStorage::Disk(disk) => disk.remove(std::slice::from_ref(id)),
-            EntityStorage::InMemory(in_memory) => in_memory.remove(id),
-        }
-    }
-
-    pub fn read_indices(&self, fields: &[String]) -> EntityIndices {
-        match self {
-            EntityStorage::Disk(disk) => disk.read_indices(fields),
-            EntityStorage::InMemory(in_memory) => in_memory.read_indices(fields),
-        }
-    }
-
-    pub fn read_all_indices(&self) -> EntityIndices {
-        match self {
-            EntityStorage::Disk(disk) => disk.read_all_indices(),
-            EntityStorage::InMemory(in_memory) => in_memory.read_all_indices(),
-        }
-    }
-}
-
-impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
-    pub fn read(&self, id: &DataItemId) -> Option<T> {
-        match self {
-            EntityStorage::Disk(disk) => disk.read_by_id(id),
-            EntityStorage::InMemory(in_memory) => in_memory.read_by_id(id),
-        }
-    }
-}
-
 pub(crate) fn position_to_id(position: u32) -> DataItemId {
     usize::try_from(position).expect("Position could not be mapped into an item ID")
 }
@@ -91,53 +26,34 @@ pub(crate) fn id_to_position(id: DataItemId) -> u32 {
 
 pub struct StorageBuilder {
     name: Option<String>,
-    kind: StorageKind,
 }
 
 impl StorageBuilder {
-    pub fn disk(name: &str) -> Self {
+    pub fn new(name: &str) -> Self {
         StorageBuilder {
             name: Some(name.into()),
-            kind: StorageKind::Disk,
-        }
-    }
-
-    pub fn in_memory() -> Self {
-        StorageBuilder {
-            name: None,
-            kind: StorageKind::InMemory,
         }
     }
 
     pub fn build<T: Indexable + 'static>(&self) -> EntityStorage<T> {
-        match self.kind {
-            StorageKind::Disk => {
-                let name = self
-                    .name
-                    .as_ref()
-                    .expect("You must specify a name for your entity to be stored in disk.");
+        let name = self
+            .name
+            .as_ref()
+            .expect("You must specify a name for your entity to be stored in disk.");
 
-                EntityStorage::Disk(DiskStorage::init(name))
-            }
-            StorageKind::InMemory => EntityStorage::InMemory(InMemoryStorage::new()),
-        }
+        EntityStorage::init(name)
     }
 }
 
-pub enum StorageKind {
-    Disk,
-    InMemory,
-}
-
 /// Storage in disk using `LMDB` for the data and their related indices.
-pub struct DiskStorage<T> {
+pub struct EntityStorage<T> {
     env: Env,
     data: Database<OwnedType<DataItemId>, SerdeBincode<T>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
 }
 
-impl<T: 'static> DiskStorage<T> {
+impl<T: 'static> EntityStorage<T> {
     /// Initialises a new `DiskStorage` instance by creating the necessary files
     /// and LMDB `Database` entries.
     pub fn init(name: &str) -> Self {
@@ -159,7 +75,7 @@ impl<T: 'static> DiskStorage<T> {
         let documents: Database<Str, SerdeBincode<RoaringBitmap>> =
             env.create_database(Some(DOCUMENTS_DB_NAME)).unwrap();
 
-        DiskStorage {
+        EntityStorage {
             env,
             indices,
             documents,
@@ -172,10 +88,10 @@ impl<T: 'static> DiskStorage<T> {
     }
 }
 
-impl<T: Indexable + Serialize> DiskStorage<T> {
+impl<T: Indexable + Serialize> EntityStorage<T> {
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
-    fn carry<I>(&self, data: I)
+    pub fn carry<I>(&self, data: I)
     where
         I: IntoIterator<Item = T>,
     {
@@ -185,7 +101,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 
     /// Add multiple items by a provided data iterator. The data is added into the storage
     /// in chunks to reduce (de)serialization overhead.
-    fn add_multiple<I>(&self, data: I)
+    pub fn add_multiple<I>(&self, data: I)
     where
         I: IntoIterator<Item = T>,
     {
@@ -202,7 +118,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 
     /// Clears the current storage indices and data.
-    fn clear(&self) {
+    pub fn clear(&self) {
         let mut txn = self.env.write_txn().unwrap();
 
         self.indices
@@ -214,7 +130,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 
     /// Adds a small slice of items into the DB by extracting its index values.
-    fn add(&self, items: &[T]) {
+    pub fn add(&self, items: &[T]) {
         let mut txn = self.env.write_txn().unwrap();
 
         let mut all = self.get_all_positions(&txn).unwrap_or_default();
@@ -261,7 +177,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 
     /// Removes a number of items at once from the DB by their IDs.
-    fn remove(&self, ids: &[DataItemId]) {
+    pub fn remove(&self, ids: &[DataItemId]) {
         let mut txn = self.env.write_txn().unwrap();
         let mut positions_to_delete = Vec::with_capacity(ids.len());
 
@@ -324,7 +240,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 
     /// Read indices for a given set of fields. In case a field is not found, it won't be present
     /// in the returned `EntityIndices`.
-    fn read_indices(&self, fields: &[String]) -> EntityIndices {
+    pub fn read_indices(&self, fields: &[String]) -> EntityIndices {
         let txn = self.env.read_txn().unwrap();
 
         let field_indices = fields
@@ -345,7 +261,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 
     /// Read all the indices present in the storage.
-    fn read_all_indices(&self) -> EntityIndices {
+    pub fn read_all_indices(&self) -> EntityIndices {
         let txn = self.env.read_txn().unwrap();
 
         let field_indices = self
@@ -368,127 +284,14 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 }
 
-impl<T: Clone + for<'a> Deserialize<'a>> DiskStorage<T> {
+impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
     /// Read an item from the DB by its ID.
-    fn read_by_id(&self, id: &DataItemId) -> Option<T> {
+    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Option<T> {
         let txn = self.env.read_txn().unwrap();
 
         self.data
             .get(&txn, id)
             .expect("Could not read item from DB")
-    }
-}
-
-pub struct InMemoryStorage<T> {
-    /// Indices available for the given associated data
-    pub(crate) indices: EntityIndices,
-
-    /// Data available in the storage associated by the ID
-    pub(crate) data: HashMap<DataItemId, T>,
-}
-
-impl<T: Indexable> InMemoryStorage<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn carry<I: IntoIterator<Item = T>>(&mut self, data: I) {
-        self.clear();
-        self.add_multiple(data);
-    }
-
-    fn add_multiple<I: IntoIterator<Item = T>>(&mut self, data: I) {
-        for item in data {
-            self.add(item);
-        }
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.indices.all.clear();
-        self.indices.field_indices.clear();
-        self.data.clear();
-    }
-
-    pub(crate) fn add(&mut self, item: T) {
-        let id = item.id();
-
-        let position = id_to_position(id);
-
-        for index_value in item.index_values() {
-            // Create index for the key value
-            let index = self
-                .indices
-                .field_indices
-                .entry(index_value.name)
-                .or_insert(Index::from_type(&index_value.descriptor));
-
-            index.put(index_value.value, position);
-        }
-        self.indices.all.insert(position);
-
-        // Associate index position to the field ID
-        self.data.insert(id, item);
-    }
-
-    pub(crate) fn remove(&mut self, id: &DataItemId) {
-        if self.data.remove(id).is_none() {
-            return;
-        }
-
-        let position = id_to_position(*id);
-
-        // Remove item from indices
-        for index in self.indices.field_indices.values_mut() {
-            index.remove_item(position);
-        }
-        self.indices.all.remove(position);
-    }
-
-    fn read_indices(&self, fields: &[String]) -> EntityIndices {
-        let field_indices = fields
-            .iter()
-            .filter_map(|name| {
-                self.indices
-                    .field_indices
-                    .get(name)
-                    .cloned()
-                    .map(|index| (name.to_string(), index))
-            })
-            .collect();
-
-        EntityIndices {
-            field_indices,
-            all: self.indices.all.clone(),
-        }
-    }
-
-    fn read_all_indices(&self) -> EntityIndices {
-        let field_indices = self
-            .indices
-            .field_indices
-            .iter()
-            .map(|(name, index)| (name.to_string(), index.clone()))
-            .collect();
-
-        EntityIndices {
-            field_indices,
-            all: self.indices.all.clone(),
-        }
-    }
-}
-
-impl<T: Clone> InMemoryStorage<T> {
-    fn read_by_id(&self, id: &DataItemId) -> Option<T> {
-        self.data.get(id).cloned()
-    }
-}
-
-impl<T> Default for InMemoryStorage<T> {
-    fn default() -> Self {
-        InMemoryStorage {
-            indices: Default::default(),
-            data: Default::default(),
-        }
     }
 }
 

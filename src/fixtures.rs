@@ -16,7 +16,7 @@ pub(crate) struct TestPlayerRunner {
 impl TestPlayerRunner {
     fn start(index: usize) -> Self {
         let name = format!("test_players_{}", index);
-        let storage = StorageBuilder::disk(&name).build();
+        let storage = StorageBuilder::new(&name).build();
 
         TestPlayerRunner {
             engine: Engine::new(storage),
@@ -49,7 +49,7 @@ impl TestRunners {
     }
 
     pub(crate) fn start_runner(&self, players: Vec<Player>) -> TestPlayerRunner {
-        let mut runner = self
+        let runner = self
             .runners
             .lock()
             .unwrap()
@@ -86,15 +86,8 @@ pub fn create_player_from_index(index: usize) -> Player {
     }
 }
 
-pub fn create_players_in_memory_storage(data: Vec<Player>) -> EntityStorage<Player> {
-    let mut storage = StorageBuilder::in_memory().build();
-    storage.carry(data);
-
-    storage
-}
-
-pub fn create_players_disk_storage(name: &str, data: Vec<Player>) -> EntityStorage<Player> {
-    let mut storage = StorageBuilder::disk(name).build();
+pub fn create_players_storage(name: &str, data: Vec<Player>) -> EntityStorage<Player> {
+    let storage = StorageBuilder::new(name).build();
     storage.carry(data);
 
     storage

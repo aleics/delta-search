@@ -6,8 +6,8 @@ use test::Bencher;
 use lazy_static::lazy_static;
 
 use delta_db::fixtures::{
-    create_players_disk_storage, create_random_players, decrease_score_deltas,
-    switch_sports_deltas, Player, Sport,
+    create_players_storage, create_random_players, decrease_score_deltas, switch_sports_deltas,
+    Player, Sport,
 };
 use delta_db::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
@@ -19,7 +19,7 @@ const PAGE_SIZE: usize = 500;
 
 lazy_static! {
     static ref PAGINATION: Pagination = Pagination::new(0, PAGE_SIZE);
-    static ref ENGINE: Engine<Player> = Engine::new(create_players_disk_storage(
+    static ref ENGINE: Engine<Player> = Engine::new(create_players_storage(
         "players_bench",
         create_random_players(COUNT)
     ));

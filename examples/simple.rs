@@ -23,7 +23,7 @@ lazy_static! {
 fn main() {
     println!("Welcome to the simple Player search!");
 
-    let mut storage = StorageBuilder::disk("players").build();
+    let storage = StorageBuilder::new("players_example_simple").build();
 
     storage.carry(vec![
         MICHAEL_JORDAN.clone(),

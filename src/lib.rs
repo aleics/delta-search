@@ -1,6 +1,7 @@
 #![feature(iter_array_chunks)]
 
 use std::fmt::{Display, Formatter};
+use std::slice;
 
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
@@ -110,12 +111,12 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> Engine<T> {
         execution.run(&self.storage)
     }
 
-    pub fn add(&mut self, item: T) {
-        self.storage.add(item);
+    pub fn add(&mut self, item: &T) {
+        self.storage.add(slice::from_ref(item));
     }
 
     pub fn remove(&mut self, id: &DataItemId) {
-        self.storage.remove(id);
+        self.storage.remove(slice::from_ref(id));
     }
 
     pub fn clear(&mut self) {
@@ -607,7 +608,7 @@ mod tests {
         ]);
 
         // when
-        runner.engine.add(ROGER.clone());
+        runner.engine.add(&ROGER);
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
