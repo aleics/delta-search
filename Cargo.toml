@@ -20,3 +20,8 @@ rand = "0.8.5"
 
 [features]
 test-fixtures = []
+
+[profile.bench]
+lto = "thin"
+debug = true
+
