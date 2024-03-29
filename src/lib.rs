@@ -15,6 +15,8 @@ use index::Index;
 use query::QueryExecution;
 use time::{Date, OffsetDateTime, Time};
 
+pub mod storage;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldValue {
     String(String),
@@ -88,130 +90,17 @@ impl Display for FieldValue {
 
 pub type DataItemId = usize;
 
-#[derive(Default)]
-struct EntityIndices {
-    /// Indices available associated by data's field name
-    field_indices: HashMap<String, Index>,
-
-    /// Bitmap including all items' positions
-    all: RoaringBitmap,
-}
-
-impl EntityIndices {
-    fn clear(&mut self) {
-        self.field_indices.clear();
-        self.all.clear();
-    }
-
-    fn add_values(&mut self, values: Vec<IndexableValue>, position: u32) {
-        for index_value in values {
-            // Create index for the key value
-            let index = self
-                .field_indices
-                .entry(index_value.name)
-                .or_insert(Index::from_type(&index_value.descriptor));
-
-            index.put(index_value.value, position);
-        }
-        self.all.insert(position);
-    }
-
-    fn remove(&mut self, position: u32) {
-        for index in self.field_indices.values_mut() {
-            index.remove_item(position);
-        }
-    }
-}
-
-pub struct EntityStorage<T> {
-    /// Indices available for the given associated data
-    indices: EntityIndices,
-
-    /// Mapping between position of a data item in the index and its ID
-    position_id: BiHashMap<u32, DataItemId>,
-
-    /// Data available in the storage associated by the ID
-    data: HashMap<DataItemId, T>,
-}
-
-impl<T: Indexable> EntityStorage<T> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn attach<I: IntoIterator<Item = T>>(&mut self, data: I) {
-        for item in data {
-            self.data.insert(item.id(), item);
-        }
-    }
-
-    pub fn index(&mut self) {
-        self.indices.clear();
-        self.position_id.clear();
-
-        for (position, (id, item)) in self.data.iter().enumerate() {
-            let position = position as u32;
-
-            self.indices.add_values(item.index_values(), position);
-
-            // Associate index position to the field ID
-            self.position_id.insert(position, *id);
-        }
-    }
-
-    fn add(&mut self, item: T) {
-        let id = item.id();
-
-        let position = self
-            .position_id
-            .get_by_right(&id)
-            .copied()
-            .unwrap_or(self.position_id.len() as u32);
-
-        self.indices.add_values(item.index_values(), position);
-
-        // Associate index position to the field ID
-        self.data.insert(id, item);
-        self.position_id.insert(position, id);
-    }
-
-    fn remove(&mut self, id: &DataItemId) {
-        if let Some((position, _)) = self.position_id.remove_by_right(id) {
-            self.data.remove(id);
-            self.indices.remove(position);
-        }
-    }
-
-    fn get_id_by_position(&self, position: &u32) -> Option<&DataItemId> {
-        self.position_id.get_by_left(position)
-    }
-
-    fn get_position_by_id(&self, id: &DataItemId) -> Option<&u32> {
-        self.position_id.get_by_right(id)
-    }
-}
-
-impl<T> Default for EntityStorage<T> {
-    fn default() -> Self {
-        EntityStorage {
-            indices: Default::default(),
-            position_id: Default::default(),
-            data: Default::default(),
-        }
-    }
-}
-
 pub struct Engine<T> {
     storage: EntityStorage<T>,
 }
 
-impl<T> Engine<T> {
+impl<T: Indexable> Engine<T> {
     pub fn new(storage: EntityStorage<T>) -> Self {
         Engine { storage }
     }
 }
 
-impl<T: Indexable + Clone> Engine<T> {
+impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> Engine<T> {
     pub fn query(&self, execution: QueryExecution<T>) -> Vec<T> {
         execution.run(&self.storage)
     }
