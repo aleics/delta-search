@@ -233,15 +233,16 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 
     fn remove(&self, ids: &[DataItemId]) {
         let mut txn = self.env.write_txn().unwrap();
+        let mut positions_to_delete = Vec::with_capacity(ids.len());
 
         for id in ids {
-            let position = id_to_position(*id);
-
             // Remove item from data and ID to position mapping
             let present = self.data.delete(&mut txn, id).unwrap();
             if !present {
                 return;
             }
+
+            let position = id_to_position(*id);
 
             let mut entries = self
                 .indices
@@ -259,10 +260,15 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 
             drop(entries);
 
-            if let Some(mut all) = self.get_all_positions(&txn) {
+            positions_to_delete.push(position);
+        }
+
+        // Remove positions from all the items that need to be deleted.
+        if let Some(mut all) = self.get_all_positions(&txn) {
+            for position in positions_to_delete {
                 all.remove(position);
-                self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
             }
+            self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
         }
 
         txn.commit().unwrap();
