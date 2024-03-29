@@ -1,11 +1,66 @@
 use std::collections::HashSet;
+use std::fs;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
 use crate::index::{Indexable, IndexableValue};
 use crate::query::{Delta, DeltaChange};
 use crate::storage::{EntityStorage, StorageBuilder};
-use crate::{DataItemId, FieldValue};
+use crate::{DataItemId, Engine, FieldValue};
+
+pub(crate) struct TestPlayerRunner {
+    pub(crate) engine: Engine<Player>,
+}
+
+impl TestPlayerRunner {
+    fn start(index: usize) -> Self {
+        let name = format!("test_players_{}", index);
+        let storage = StorageBuilder::disk(&name).build();
+
+        TestPlayerRunner {
+            engine: Engine::new(storage),
+        }
+    }
+
+    fn clean_up(&self) {
+        let path = self.engine.storage.get_path();
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+
+impl Drop for TestPlayerRunner {
+    fn drop(&mut self) {
+        self.clean_up()
+    }
+}
+
+pub(crate) struct TestRunners {
+    runners: Mutex<Vec<TestPlayerRunner>>,
+}
+
+impl TestRunners {
+    pub(crate) fn start(count: usize) -> Self {
+        let runners = (0..count).map(TestPlayerRunner::start).collect();
+
+        TestRunners {
+            runners: Mutex::new(runners),
+        }
+    }
+
+    pub(crate) fn start_runner(&self, players: Vec<Player>) -> TestPlayerRunner {
+        let mut runner = self
+            .runners
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("No storages left - make sure you didn't exceed the test count");
+
+        runner.engine.storage.carry(players);
+
+        runner
+    }
+}
 
 pub fn create_random_players(count: usize) -> Vec<Player> {
     (0..count).map(create_player_from_index).collect()
@@ -33,6 +88,13 @@ pub fn create_player_from_index(index: usize) -> Player {
 
 pub fn create_players_in_memory_storage(data: Vec<Player>) -> EntityStorage<Player> {
     let mut storage = StorageBuilder::in_memory().build();
+    storage.carry(data);
+
+    storage
+}
+
+pub fn create_players_disk_storage(name: &str, data: Vec<Player>) -> EntityStorage<Player> {
+    let mut storage = StorageBuilder::disk(name).build();
     storage.carry(data);
 
     storage

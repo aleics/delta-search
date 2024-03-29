@@ -6,12 +6,12 @@ use test::Bencher;
 use lazy_static::lazy_static;
 
 use delta_db::fixtures::{
-    create_random_players, decrease_score_deltas, switch_sports_deltas, Player, Sport,
+    create_players_disk_storage, create_random_players, decrease_score_deltas,
+    switch_sports_deltas, Player, Sport,
 };
 use delta_db::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
 };
-use delta_db::storage::{EntityStorage, StorageBuilder};
 use delta_db::{Engine, FieldValue};
 
 const COUNT: usize = 10000;
@@ -19,15 +19,10 @@ const PAGE_SIZE: usize = 500;
 
 lazy_static! {
     static ref PAGINATION: Pagination = Pagination::new(0, PAGE_SIZE);
-    static ref ENGINE: Engine<Player> =
-        Engine::new(create_players_disk_storage(create_random_players(COUNT)));
-}
-
-fn create_players_disk_storage(data: Vec<Player>) -> EntityStorage<Player> {
-    let mut storage = StorageBuilder::disk("players").build();
-    storage.carry(data);
-
-    storage
+    static ref ENGINE: Engine<Player> = Engine::new(create_players_disk_storage(
+        "players_bench",
+        create_random_players(COUNT)
+    ));
 }
 
 #[bench]

@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use heed::types::*;
+use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
-use crate::DataItemId;
 use crate::index::{Index, Indexable};
+use crate::DataItemId;
 
-const FOLDER: &str = "./delta-db";
+pub(crate) const DB_FOLDER: &str = "./delta-db";
 const DATA_DB_NAME: &str = "data";
 const INDICES_DB_NAME: &str = "indices";
 const DOCUMENTS_DB_NAME: &str = "documents";
@@ -28,7 +28,6 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
             EntityStorage::InMemory(in_memory) => in_memory.carry(data),
         }
     }
-
 
     pub fn clear(&mut self) {
         match self {
@@ -143,7 +142,7 @@ impl<T: 'static> DiskStorage<T> {
     /// and LMDB `Database` entries.
     pub fn init(name: &str) -> Self {
         let file_name = format!("{}.mdb", name);
-        let path = Path::new(FOLDER).join(file_name);
+        let path = Path::new(DB_FOLDER).join(file_name);
 
         std::fs::create_dir_all(&path).unwrap();
 
@@ -167,14 +166,18 @@ impl<T: 'static> DiskStorage<T> {
             data,
         }
     }
+
+    pub(crate) fn get_path(&self) -> &Path {
+        self.env.path()
+    }
 }
 
 impl<T: Indexable + Serialize> DiskStorage<T> {
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
     fn carry<I>(&self, data: I)
-        where
-            I: IntoIterator<Item=T>,
+    where
+        I: IntoIterator<Item = T>,
     {
         self.clear();
         self.add_multiple(data);
@@ -182,7 +185,10 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 
     /// Add multiple items by a provided data iterator. The data is added into the storage
     /// in chunks to reduce (de)serialization overhead.
-    fn add_multiple<I>(&self, data: I) where I: IntoIterator<Item=T> {
+    fn add_multiple<I>(&self, data: I)
+    where
+        I: IntoIterator<Item = T>,
+    {
         // Add elements in chunks to optimise the storing execution write operations in bulk.
         let mut chunks = data.into_iter().array_chunks::<100>();
         for chunk in chunks.by_ref() {
@@ -386,12 +392,12 @@ impl<T: Indexable> InMemoryStorage<T> {
         Self::default()
     }
 
-    pub fn carry<I: IntoIterator<Item=T>>(&mut self, data: I) {
+    pub fn carry<I: IntoIterator<Item = T>>(&mut self, data: I) {
         self.clear();
         self.add_multiple(data);
     }
 
-    fn add_multiple<I: IntoIterator<Item=T>>(&mut self, data: I) {
+    fn add_multiple<I: IntoIterator<Item = T>>(&mut self, data: I) {
         for item in data {
             self.add(item);
         }
