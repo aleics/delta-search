@@ -4,7 +4,7 @@ use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
 use crate::index::{Index, Indexable};
-use crate::storage::{EntityIndices, EntityStorage};
+use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorage};
 use crate::{DataItemId, FieldValue};
 
 #[derive(Debug, PartialEq)]
@@ -32,7 +32,7 @@ impl QueryIndices {
         }
     }
 
-    fn attach_deltas<T>(mut self, deltas: &[BoxedDelta<T>], storage: &EntityStorage<T>) -> Self
+    fn attach_deltas<T>(mut self, deltas: &[BoxedDelta<T>]) -> Self
     where
         T: Indexable + Serialize,
     {
@@ -49,14 +49,13 @@ impl QueryIndices {
 
             // Apply the change to the delta related index
             if let Some(delta_index) = self.deltas.get_mut(&change.scope.field_name) {
-                if let Some(position) = storage.get_position_by_id(&change.scope.id) {
-                    if let Some(before) = change.before.as_ref() {
-                        delta_index.remove(before, position);
-                    }
+                let position = id_to_position(change.scope.id);
+                if let Some(before) = change.before.as_ref() {
+                    delta_index.remove(before, position);
+                }
 
-                    if let Some(after) = change.after {
-                        delta_index.put(after, position);
-                    }
+                if let Some(after) = change.after {
+                    delta_index.put(after, position);
                 }
             }
         }
@@ -162,7 +161,7 @@ impl<T: Indexable + Serialize> OptionsQueryExecution<T> {
             None => storage.read_all_indices(),
         };
 
-        let indices = QueryIndices::new(indices).attach_deltas(&self.deltas, storage);
+        let indices = QueryIndices::new(indices).attach_deltas(&self.deltas);
 
         let filter_result = self
             .filter
@@ -225,8 +224,8 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
     }
 
     pub fn run(self, storage: &EntityStorage<T>) -> Vec<T> {
-        let indices = QueryIndices::new(storage.read_indices(&self.ref_fields))
-            .attach_deltas(&self.deltas, storage);
+        let indices =
+            QueryIndices::new(storage.read_indices(&self.ref_fields)).attach_deltas(&self.deltas);
 
         let filter_result = self
             .filter
@@ -234,29 +233,24 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
             .map(|filter| indices.execute_filter(filter))
             .unwrap_or_else(|| FilterResult::new(indices.stored.all.clone()));
 
-        let item_ids = self.sort(filter_result, &indices, storage);
+        let item_ids = self.sort(filter_result, &indices);
 
         self.read_data(&item_ids, storage)
     }
 
-    fn sort(
-        &self,
-        filter_result: FilterResult,
-        indices: &QueryIndices,
-        storage: &EntityStorage<T>,
-    ) -> Vec<DataItemId> {
+    fn sort(&self, filter_result: FilterResult, indices: &QueryIndices) -> Vec<DataItemId> {
         if let Some(sort) = &self.sort {
             return indices
                 .execute_sort(&filter_result.hits, sort)
                 .iter()
-                .flat_map(|position| storage.get_id_by_position(position))
+                .map(|position| position_to_id(*position))
                 .collect();
         }
 
         filter_result
             .hits
             .iter()
-            .flat_map(|position| storage.get_id_by_position(&position))
+            .map(|position| position_to_id(position))
             .collect()
     }
 

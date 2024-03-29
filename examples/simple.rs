@@ -1,12 +1,12 @@
 use lazy_static::lazy_static;
 use time::{Date, Month};
 
-use delta_db::{Engine, FieldValue};
 use delta_db::fixtures::{Player, Sport, SwitchSportsDelta};
 use delta_db::query::{
     CompositeFilter, OptionsQueryExecution, QueryExecution, Sort, SortDirection,
 };
 use delta_db::storage::StorageBuilder;
+use delta_db::{Engine, FieldValue};
 
 lazy_static! {
     static ref MICHAEL_JORDAN: Player =

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use bimap::BiHashMap;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use heed::types::*;
 use roaring::RoaringBitmap;
@@ -14,8 +13,6 @@ const FOLDER: &str = "./delta-db";
 const DATA_DB_NAME: &str = "data";
 const INDICES_DB_NAME: &str = "indices";
 const DOCUMENTS_DB_NAME: &str = "documents";
-const POSITION_TO_ID_DB_NAME: &str = "position_to_id";
-const ID_TO_POSITION_DB_NAME: &str = "id_to_position";
 
 const ALL_ITEMS_KEY: &str = "__all";
 
@@ -53,20 +50,6 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
         }
     }
 
-    pub fn get_id_by_position(&self, position: &u32) -> Option<DataItemId> {
-        match self {
-            EntityStorage::Disk(disk) => disk.get_id_by_position(position),
-            EntityStorage::InMemory(in_memory) => in_memory.get_id_by_position(position).copied(),
-        }
-    }
-
-    pub fn get_position_by_id(&self, id: &DataItemId) -> Option<u32> {
-        match self {
-            EntityStorage::Disk(disk) => disk.get_position_by_id(id),
-            EntityStorage::InMemory(in_memory) => in_memory.get_position_by_id(id).copied(),
-        }
-    }
-
     pub fn read_indices(&self, fields: &[String]) -> EntityIndices {
         match self {
             EntityStorage::Disk(disk) => disk.read_indices(fields),
@@ -89,6 +72,14 @@ impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
             EntityStorage::InMemory(in_memory) => in_memory.read_by_id(id),
         }
     }
+}
+
+pub(crate) fn position_to_id(position: u32) -> DataItemId {
+    usize::try_from(position).expect("Position could not be mapped into an item ID")
+}
+
+pub(crate) fn id_to_position(id: DataItemId) -> u32 {
+    u32::try_from(id).expect("ID could not be mapped into an index position")
 }
 
 pub struct StorageBuilder {
@@ -114,7 +105,8 @@ impl StorageBuilder {
     pub fn build<T: Indexable + 'static>(&self) -> EntityStorage<T> {
         match self.kind {
             StorageKind::Disk => {
-                let name = self.name
+                let name = self
+                    .name
                     .as_ref()
                     .expect("You must specify a name for your entity to be stored in disk.");
 
@@ -135,8 +127,6 @@ pub struct DiskStorage<T> {
     data: Database<OwnedType<DataItemId>, SerdeBincode<T>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
-    id_to_position: Database<OwnedType<DataItemId>, OwnedType<u32>>,
-    position_to_id: Database<OwnedType<u32>, OwnedType<DataItemId>>,
 }
 
 impl<T: 'static> DiskStorage<T> {
@@ -158,17 +148,11 @@ impl<T: 'static> DiskStorage<T> {
             env.create_database(Some(INDICES_DB_NAME)).unwrap();
         let documents: Database<Str, SerdeBincode<RoaringBitmap>> =
             env.create_database(Some(DOCUMENTS_DB_NAME)).unwrap();
-        let id_to_position: Database<OwnedType<DataItemId>, OwnedType<u32>> =
-            env.create_database(Some(ID_TO_POSITION_DB_NAME)).unwrap();
-        let position_to_id: Database<OwnedType<u32>, OwnedType<DataItemId>> =
-            env.create_database(Some(POSITION_TO_ID_DB_NAME)).unwrap();
 
         DiskStorage {
             env,
             indices,
             documents,
-            position_to_id,
-            id_to_position,
             data,
         }
     }
@@ -198,12 +182,6 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         self.indices
             .clear(&mut txn)
             .expect("Could not clear indices.");
-        self.position_to_id
-            .clear(&mut txn)
-            .expect("Could not clear position to IDs mapping.");
-        self.id_to_position
-            .clear(&mut txn)
-            .expect("Could not clear ID to positions mapping.");
         self.data.clear(&mut txn).expect("Could not clear data.");
 
         txn.commit().unwrap();
@@ -218,10 +196,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         for item in items {
             // Read item ID and determine position
             let id = item.id();
-
-            let position = self
-                .get_position_by_id(&id)
-                .unwrap_or_else(|| self.id_to_position.len(&txn).unwrap() as u32);
+            let position = id_to_position(id);
 
             // Insert item in the data DB
             self.data.put(&mut txn, &id, item).unwrap();
@@ -244,12 +219,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
                 }
             }
 
-
             all.insert(position);
-
-            // Add item in the position to ID mapping
-            self.position_to_id.put(&mut txn, &position, &id).unwrap();
-            self.id_to_position.put(&mut txn, &id, &position).unwrap();
         }
 
         self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
@@ -265,33 +235,33 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         let mut txn = self.env.write_txn().unwrap();
 
         for id in ids {
-            if let Some(position) = self.get_position_by_id(id) {
+            let position = id_to_position(*id);
 
-                // Remove item from data and ID to position mapping
-                self.data.delete(&mut txn, id).unwrap();
-                self.id_to_position.delete(&mut txn, id).unwrap();
-                self.position_to_id.delete(&mut txn, &position).unwrap();
+            // Remove item from data and ID to position mapping
+            let present = self.data.delete(&mut txn, id).unwrap();
+            if !present {
+                return;
+            }
 
-                let mut entries = self
-                    .indices
-                    .iter_mut(&mut txn)
-                    .expect("Could not iterate indices from the DB.");
+            let mut entries = self
+                .indices
+                .iter_mut(&mut txn)
+                .expect("Could not iterate indices from the DB.");
 
-                while let Some(entry) = entries.next() {
-                    let (key, mut value) = entry
-                        .map(|(key, value)| (key.to_string(), value))
-                        .expect("Could not read entry while iterating indices from the DB.");
+            while let Some(entry) = entries.next() {
+                let (key, mut value) = entry
+                    .map(|(key, value)| (key.to_string(), value))
+                    .expect("Could not read entry while iterating indices from the DB.");
 
-                    value.remove_item(position);
-                    entries.put_current(&key, &value).unwrap();
-                }
+                value.remove_item(position);
+                entries.put_current(&key, &value).unwrap();
+            }
 
-                drop(entries);
+            drop(entries);
 
-                if let Some(mut all) = self.get_all_positions(&txn) {
-                    all.remove(position);
-                    self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
-                }
+            if let Some(mut all) = self.get_all_positions(&txn) {
+                all.remove(position);
+                self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
             }
         }
 
@@ -299,26 +269,9 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
     }
 
     fn get_all_positions(&self, txn: &RoTxn) -> Option<RoaringBitmap> {
-        self
-            .documents
+        self.documents
             .get(txn, ALL_ITEMS_KEY)
             .expect("Could not read all items from the DB.")
-    }
-
-    fn get_id_by_position(&self, position: &u32) -> Option<DataItemId> {
-        let txn = self.env.read_txn().unwrap();
-
-        self.position_to_id
-            .get(&txn, position)
-            .expect("Could not read id by position")
-    }
-
-    fn get_position_by_id(&self, id: &DataItemId) -> Option<u32> {
-        let txn = self.env.read_txn().unwrap();
-
-        self.id_to_position
-            .get(&txn, id)
-            .expect("Could not read position by id")
     }
 
     fn read_indices(&self, fields: &[String]) -> EntityIndices {
@@ -378,9 +331,6 @@ pub struct InMemoryStorage<T> {
     /// Indices available for the given associated data
     pub(crate) indices: EntityIndices,
 
-    /// Mapping between position of a data item in the index and its ID
-    position_id: BiHashMap<u32, DataItemId>,
-
     /// Data available in the storage associated by the ID
     pub(crate) data: HashMap<DataItemId, T>,
 }
@@ -400,18 +350,13 @@ impl<T: Indexable> InMemoryStorage<T> {
     pub(crate) fn clear(&mut self) {
         self.indices.all.clear();
         self.indices.field_indices.clear();
-        self.position_id.clear();
         self.data.clear();
     }
 
     pub(crate) fn add(&mut self, item: T) {
         let id = item.id();
 
-        let position = self
-            .position_id
-            .get_by_right(&id)
-            .copied()
-            .unwrap_or(self.position_id.len() as u32);
+        let position = id_to_position(id);
 
         for index_value in item.index_values() {
             // Create index for the key value
@@ -427,27 +372,20 @@ impl<T: Indexable> InMemoryStorage<T> {
 
         // Associate index position to the field ID
         self.data.insert(id, item);
-        self.position_id.insert(position, id);
     }
 
     pub(crate) fn remove(&mut self, id: &DataItemId) {
-        if let Some((position, _)) = self.position_id.remove_by_right(id) {
-            self.data.remove(id);
-
-            // Remove item from indices
-            for index in self.indices.field_indices.values_mut() {
-                index.remove_item(position);
-            }
-            self.indices.all.remove(position);
+        if self.data.remove(id).is_none() {
+            return;
         }
-    }
 
-    pub(crate) fn get_id_by_position(&self, position: &u32) -> Option<&DataItemId> {
-        self.position_id.get_by_left(position)
-    }
+        let position = id_to_position(*id);
 
-    pub(crate) fn get_position_by_id(&self, id: &DataItemId) -> Option<&u32> {
-        self.position_id.get_by_right(id)
+        // Remove item from indices
+        for index in self.indices.field_indices.values_mut() {
+            index.remove_item(position);
+        }
+        self.indices.all.remove(position);
     }
 
     fn read_indices(&self, fields: &[String]) -> EntityIndices {
@@ -493,7 +431,6 @@ impl<T> Default for InMemoryStorage<T> {
     fn default() -> Self {
         InMemoryStorage {
             indices: Default::default(),
-            position_id: Default::default(),
             data: Default::default(),
         }
     }

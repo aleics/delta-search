@@ -126,7 +126,6 @@ mod tests {
     use lazy_static::lazy_static;
     use time::{Date, Month};
 
-    use crate::{Engine, FieldValue};
     use crate::fixtures::{
         create_player_from_index, create_players_in_memory_storage, create_random_players,
         DecreaseScoreDelta, Player, Sport, SwitchSportsDelta,
@@ -135,6 +134,7 @@ mod tests {
         CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution, Sort,
         SortDirection,
     };
+    use crate::{Engine, FieldValue};
 
     lazy_static! {
         static ref MICHAEL_JORDAN: Player =
