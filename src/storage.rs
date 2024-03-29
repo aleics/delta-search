@@ -29,10 +29,18 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
         }
     }
 
+
     pub fn clear(&mut self) {
         match self {
             EntityStorage::Disk(disk) => disk.clear(),
             EntityStorage::InMemory(in_memory) => in_memory.clear(),
+        }
+    }
+
+    pub fn add_multiple(&mut self, data: Vec<T>) {
+        match self {
+            EntityStorage::Disk(disk) => disk.add_multiple(data),
+            EntityStorage::InMemory(in_memory) => in_memory.add_multiple(data),
         }
     }
 
@@ -122,6 +130,7 @@ pub enum StorageKind {
     InMemory,
 }
 
+/// Storage in disk using `LMDB` for the data and their related indices.
 pub struct DiskStorage<T> {
     env: Env,
     data: Database<OwnedType<DataItemId>, SerdeBincode<T>>,
@@ -130,6 +139,8 @@ pub struct DiskStorage<T> {
 }
 
 impl<T: 'static> DiskStorage<T> {
+    /// Initialises a new `DiskStorage` instance by creating the necessary files
+    /// and LMDB `Database` entries.
     pub fn init(name: &str) -> Self {
         let file_name = format!("{}.mdb", name);
         let path = Path::new(FOLDER).join(file_name);
@@ -159,24 +170,33 @@ impl<T: 'static> DiskStorage<T> {
 }
 
 impl<T: Indexable + Serialize> DiskStorage<T> {
-    pub fn carry<I>(&self, data: I)
+    /// Fill the DB with data by clearing the previous one. This is meant for when initialising
+    /// the storage and remove any previous data.
+    fn carry<I>(&self, data: I)
         where
             I: IntoIterator<Item=T>,
     {
         self.clear();
+        self.add_multiple(data);
+    }
 
+    /// Add multiple items by a provided data iterator. The data is added into the storage
+    /// in chunks to reduce (de)serialization overhead.
+    fn add_multiple<I>(&self, data: I) where I: IntoIterator<Item=T> {
+        // Add elements in chunks to optimise the storing execution write operations in bulk.
         let mut chunks = data.into_iter().array_chunks::<100>();
-
         for chunk in chunks.by_ref() {
             self.add(&chunk);
         }
 
+        // In case there's some leftovers after splitting in chunks
         if let Some(remainder) = chunks.into_remainder() {
             self.add(remainder.as_slice());
         }
     }
 
-    pub(crate) fn clear(&self) {
+    /// Clears the current storage indices and data.
+    fn clear(&self) {
         let mut txn = self.env.write_txn().unwrap();
 
         self.indices
@@ -187,7 +207,8 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         txn.commit().unwrap();
     }
 
-    pub(crate) fn add(&self, items: &[T]) {
+    /// Adds a small slice of items into the DB by extracting its index values.
+    fn add(&self, items: &[T]) {
         let mut txn = self.env.write_txn().unwrap();
 
         let mut all = self.get_all_positions(&txn).unwrap_or_default();
@@ -201,7 +222,8 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
             // Insert item in the data DB
             self.data.put(&mut txn, &id, item).unwrap();
 
-            // Update indices with item's indexed values
+            // Update indices in memory with the item data to reduce (de)serialization overhead
+            // if we update index one by one in the DB.
             for index_value in item.index_values() {
                 let value = index_value.value.clone();
 
@@ -222,6 +244,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
             all.insert(position);
         }
 
+        // Store indices in the DB for each index that has been changed.
         self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
 
         for (name, index) in indices_to_store {
@@ -231,6 +254,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         txn.commit().unwrap();
     }
 
+    /// Removes a number of items at once from the DB by their IDs.
     fn remove(&self, ids: &[DataItemId]) {
         let mut txn = self.env.write_txn().unwrap();
         let mut positions_to_delete = Vec::with_capacity(ids.len());
@@ -274,20 +298,34 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         txn.commit().unwrap();
     }
 
+    /// Get a `RoaringBitmap` for all the data's positions in the DB.
+    ///
+    /// Use the current transaction to don't create transactions implicitly, if not needed.
     fn get_all_positions(&self, txn: &RoTxn) -> Option<RoaringBitmap> {
         self.documents
             .get(txn, ALL_ITEMS_KEY)
             .expect("Could not read all items from the DB.")
     }
 
+    /// Read an index from the DB by its field name.
+    ///
+    /// Use the current transaction to don't create transactions implicitly, if not needed.
+    fn read_index(&self, txn: &RoTxn, field: &String) -> Option<Index> {
+        self.indices
+            .get(txn, field)
+            .unwrap_or_else(|_| panic!("Could not read index with \"{}\" from the DB", field))
+    }
+
+    /// Read indices for a given set of fields. In case a field is not found, it won't be present
+    /// in the returned `EntityIndices`.
     fn read_indices(&self, fields: &[String]) -> EntityIndices {
         let txn = self.env.read_txn().unwrap();
 
         let field_indices = fields
             .iter()
             .filter_map(|name| {
-                let index = self.indices.get(&txn, name).unwrap();
-                index.map(|index| (name.to_string(), index))
+                self.read_index(&txn, name)
+                    .map(|index| (name.to_string(), index))
             })
             .collect();
 
@@ -300,6 +338,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
         EntityIndices { field_indices, all }
     }
 
+    /// Read all the indices present in the storage.
     fn read_all_indices(&self) -> EntityIndices {
         let txn = self.env.read_txn().unwrap();
 
@@ -308,7 +347,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
             .iter(&txn)
             .expect("Could not iterate indices from the DB.")
             .map(|item| {
-                item.map(|(key, value)| (key.into(), value))
+                item.map(|(key, value)| (key.to_string(), value))
                     .expect("Could not read index from DB.")
             })
             .collect();
@@ -324,6 +363,7 @@ impl<T: Indexable + Serialize> DiskStorage<T> {
 }
 
 impl<T: Clone + for<'a> Deserialize<'a>> DiskStorage<T> {
+    /// Read an item from the DB by its ID.
     fn read_by_id(&self, id: &DataItemId) -> Option<T> {
         let txn = self.env.read_txn().unwrap();
 
@@ -348,6 +388,10 @@ impl<T: Indexable> InMemoryStorage<T> {
 
     pub fn carry<I: IntoIterator<Item=T>>(&mut self, data: I) {
         self.clear();
+        self.add_multiple(data);
+    }
+
+    fn add_multiple<I: IntoIterator<Item=T>>(&mut self, data: I) {
         for item in data {
             self.add(item);
         }

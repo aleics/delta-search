@@ -243,15 +243,12 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
             return indices
                 .execute_sort(&filter_result.hits, sort)
                 .iter()
-                .map(|position| position_to_id(*position))
+                .copied()
+                .map(position_to_id)
                 .collect();
         }
 
-        filter_result
-            .hits
-            .iter()
-            .map(|position| position_to_id(position))
-            .collect()
+        filter_result.hits.iter().map(position_to_id).collect()
     }
 
     fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage<T>) -> Vec<T> {
