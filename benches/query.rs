@@ -5,14 +5,14 @@ use test::Bencher;
 
 use lazy_static::lazy_static;
 
-use delta_db::fixtures::{
+use delta_search::fixtures::{
     create_players_storage, create_random_players, decrease_score_deltas, switch_sports_deltas,
     Player, Sport,
 };
-use delta_db::query::{
+use delta_search::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
 };
-use delta_db::{Engine, FieldValue};
+use delta_search::{Engine, FieldValue};
 
 const COUNT: usize = 10000;
 const PAGE_SIZE: usize = 500;
