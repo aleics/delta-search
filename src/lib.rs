@@ -1,117 +1,35 @@
 #![feature(iter_array_chunks)]
 
-use std::fmt::{Display, Formatter};
+use crate::data::{DataItem, DataItemId};
+use crate::query::{FilterOption, OptionsQueryExecution, QueryExecution};
+use crate::storage::{CreateFieldIndex, EntityStorage};
 use std::slice;
 
-use ordered_float::OrderedFloat;
-use serde::{Deserialize, Serialize};
-use time::{Date, OffsetDateTime, Time};
-
-use query::QueryExecution;
-use storage::EntityStorage;
-
-use crate::index::Indexable;
-use crate::query::{FilterOption, OptionsQueryExecution};
-
+pub mod data;
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
 pub mod index;
 pub mod query;
 pub mod storage;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FieldValue {
-    String(String),
-    Numeric(OrderedFloat<f64>),
-    Date(OffsetDateTime),
+pub struct Engine {
+    storage: EntityStorage,
 }
 
-impl FieldValue {
-    pub fn string(value: String) -> FieldValue {
-        FieldValue::String(value)
-    }
-
-    pub fn numeric(value: f64) -> FieldValue {
-        FieldValue::Numeric(OrderedFloat(value))
-    }
-
-    pub fn date(date: Date) -> FieldValue {
-        FieldValue::Date(OffsetDateTime::new_utc(date, Time::MIDNIGHT))
-    }
-
-    fn as_numeric(&self) -> Option<&OrderedFloat<f64>> {
-        if let FieldValue::Numeric(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn get_numeric(self) -> Option<OrderedFloat<f64>> {
-        if let FieldValue::Numeric(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn as_string(&self) -> Option<&String> {
-        if let FieldValue::String(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn get_string(self) -> Option<String> {
-        if let FieldValue::String(value) = self {
-            Some(value)
-        } else {
-            None
-        }
-    }
-
-    fn get_date_epoch(&self) -> Option<i64> {
-        if let FieldValue::Date(value) = self {
-            Some(value.unix_timestamp())
-        } else {
-            None
-        }
-    }
-}
-
-impl Display for FieldValue {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FieldValue::String(value) => write!(f, "{}", value),
-            FieldValue::Numeric(value) => write!(f, "{}", value.0),
-            FieldValue::Date(value) => write!(f, "{}", value),
-        }
-    }
-}
-
-pub type DataItemId = usize;
-
-pub struct Engine<T> {
-    storage: EntityStorage<T>,
-}
-
-impl<T: Indexable> Engine<T> {
-    pub fn new(storage: EntityStorage<T>) -> Self {
+impl Engine {
+    pub fn new(storage: EntityStorage) -> Self {
         Engine { storage }
     }
-}
 
-impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> Engine<T> {
-    pub fn query(&self, execution: QueryExecution<T>) -> Vec<T> {
+    pub fn query(&self, execution: QueryExecution) -> Vec<DataItem> {
         execution.run(&self.storage)
     }
 
-    pub fn options(&self, execution: OptionsQueryExecution<T>) -> Vec<FilterOption> {
+    pub fn options(&self, execution: OptionsQueryExecution) -> Vec<FilterOption> {
         execution.run(&self.storage)
     }
 
-    pub fn add(&mut self, item: &T) {
+    pub fn add(&mut self, item: &DataItem) {
         self.storage.add(slice::from_ref(item));
     }
 
@@ -129,29 +47,27 @@ mod tests {
     use std::collections::HashMap;
 
     use lazy_static::lazy_static;
-    use time::{Date, Month};
 
+    use crate::data::{DataItem, FieldValue};
     use crate::fixtures::{
-        create_player_from_index, create_random_players, DecreaseScoreDelta, Player, Sport,
-        SwitchSportsDelta, TestRunners,
+        create_player_from_index, create_random_players, cristiano_ronaldo, david, lionel_messi,
+        michael_jordan, roger, DecreaseScoreDelta, Player, Sport, SwitchSportsDelta, TestRunners,
     };
     use crate::query::{
         CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution, Sort,
         SortDirection,
     };
-    use crate::FieldValue;
 
     lazy_static! {
-        static ref MICHAEL_JORDAN: Player =
-            Player::new(0, "Michael Jordan", Sport::Basketball, "1963-02-17").with_score(10.0);
-        static ref LIONEL_MESSI: Player =
-            Player::new(1, "Lionel Messi", Sport::Football, "1987-06-24").with_score(9.0);
-        static ref CRISTIANO_RONALDO: Player =
-            Player::new(2, "Cristiano Ronaldo", Sport::Football, "1985-02-05").with_score(9.0);
-        static ref ROGER: Player =
-            Player::new(3, "Roger", Sport::Football, "1996-05-01").with_score(5.0);
-        static ref DAVID: Player = Player::new(4, "David", Sport::Football, "1974-10-01");
-        static ref STORAGES: TestRunners = TestRunners::start(16);
+        static ref STORAGES: TestRunners = TestRunners::start(24);
+    }
+
+    lazy_static! {
+        static ref MICHAEL_JORDAN: DataItem = michael_jordan();
+        static ref LIONEL_MESSI: DataItem = lionel_messi();
+        static ref CRISTIANO_RONALDO: DataItem = cristiano_ronaldo();
+        static ref ROGER: DataItem = roger();
+        static ref DAVID: DataItem = david();
     }
 
     #[test]
@@ -163,7 +79,7 @@ mod tests {
             CRISTIANO_RONALDO.clone(),
         ]);
 
-        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
         let mut matches = runner
@@ -189,10 +105,7 @@ mod tests {
             ROGER.clone(),
         ]);
 
-        let filter = CompositeFilter::ge(
-            "birth_date",
-            FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
-        );
+        let filter = CompositeFilter::ge("birth_date", FieldValue::str("1990-01-01"));
 
         // when
         let mut matches = runner
@@ -217,8 +130,8 @@ mod tests {
 
         let filter = CompositeFilter::between(
             "birth_date",
-            FieldValue::date(Date::from_calendar_date(1970, Month::January, 1).unwrap()),
-            FieldValue::date(Date::from_calendar_date(1990, Month::January, 1).unwrap()),
+            FieldValue::str("1970-01-01"),
+            FieldValue::str("1990-01-01"),
         );
 
         // when
@@ -244,8 +157,7 @@ mod tests {
             ROGER.clone(),
         ]);
 
-        let filter =
-            CompositeFilter::between("score", FieldValue::numeric(6.0), FieldValue::numeric(10.0));
+        let filter = CompositeFilter::between("score", FieldValue::dec(6.0), FieldValue::dec(10.0));
 
         // when
         let mut matches = runner
@@ -267,7 +179,7 @@ mod tests {
             ROGER.clone(),
         ]);
 
-        let filter = CompositeFilter::ge("score", FieldValue::numeric(6.0));
+        let filter = CompositeFilter::ge("score", FieldValue::dec(6.0));
 
         // when
         let mut matches = runner
@@ -289,7 +201,7 @@ mod tests {
             ROGER.clone(),
         ]);
 
-        let filter = CompositeFilter::le("score", FieldValue::numeric(6.0));
+        let filter = CompositeFilter::le("score", FieldValue::dec(6.0));
 
         // when
         let mut matches = runner
@@ -345,10 +257,10 @@ mod tests {
         ]);
 
         let deltas = vec![
-            DecreaseScoreDelta::new(MICHAEL_JORDAN.id, MICHAEL_JORDAN.score.unwrap()),
-            DecreaseScoreDelta::new(LIONEL_MESSI.id, LIONEL_MESSI.score.unwrap()),
+            DecreaseScoreDelta::create(0, 10.0),
+            DecreaseScoreDelta::create(1, 9.0),
         ];
-        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
         let mut matches = runner.engine.query(
@@ -364,12 +276,14 @@ mod tests {
             matches,
             vec![
                 Player {
-                    id: LIONEL_MESSI.id,
-                    name: LIONEL_MESSI.name.to_string(),
+                    id: 1,
+                    name: "Lionel Messi".to_string(),
                     score: Some(8.0),
-                    sport: LIONEL_MESSI.sport.clone(),
-                    birth_date: LIONEL_MESSI.birth_date.clone(),
-                },
+                    sport: Sport::Football,
+                    birth_date: "1987-06-24".to_string(),
+                    active: true,
+                }
+                .as_item(),
                 CRISTIANO_RONALDO.clone(),
             ]
         );
@@ -384,12 +298,12 @@ mod tests {
             CRISTIANO_RONALDO.clone(),
         ]);
 
-        let deltas = vec![SwitchSportsDelta::new(
-            MICHAEL_JORDAN.id,
-            MICHAEL_JORDAN.sport.clone(),
+        let deltas = vec![SwitchSportsDelta::create(
+            0,
+            Sport::Basketball,
             Sport::Football,
         )];
-        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
         let mut matches = runner.engine.query(
@@ -405,12 +319,14 @@ mod tests {
             matches,
             vec![
                 Player {
-                    id: MICHAEL_JORDAN.id,
-                    name: MICHAEL_JORDAN.name.to_string(),
-                    score: MICHAEL_JORDAN.score,
+                    id: 0,
+                    name: "Michael Jordan".to_string(),
+                    score: Some(10.0),
                     sport: Sport::Football,
-                    birth_date: MICHAEL_JORDAN.birth_date.clone(),
-                },
+                    birth_date: "1963-02-17".to_string(),
+                    active: false,
+                }
+                .as_item(),
                 LIONEL_MESSI.clone(),
                 CRISTIANO_RONALDO.clone(),
             ]
@@ -422,7 +338,7 @@ mod tests {
         // given
         let runner = STORAGES.start_runner(create_random_players(20));
 
-        let filter = CompositeFilter::eq("sport", FieldValue::string("football".to_string()));
+        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
         let sort = Sort::new("score");
         let pagination = Pagination::new(2, 5);
 
@@ -521,6 +437,10 @@ mod tests {
         assert_eq!(
             filter_options,
             vec![
+                FilterOption::new(
+                    "active".to_string(),
+                    HashMap::from_iter([("true".to_string(), 2), ("false".to_string(), 3)])
+                ),
                 FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
                 FilterOption::new(
                     "name".to_string(),
@@ -543,10 +463,10 @@ mod tests {
                 FilterOption::new(
                     "sport".to_string(),
                     HashMap::from_iter([
-                        ("basketball".to_string(), 1),
-                        ("football".to_string(), 4)
+                        ("Basketball".to_string(), 2),
+                        ("Football".to_string(), 3)
                     ]),
-                ),
+                )
             ]
         );
     }
@@ -561,7 +481,7 @@ mod tests {
             ROGER.clone(),
             DAVID.clone(),
         ]);
-        let filter = CompositeFilter::ge("score", FieldValue::numeric(8.0));
+        let filter = CompositeFilter::ge("score", FieldValue::dec(8.0));
 
         // when
         let mut filter_options = runner
@@ -574,6 +494,10 @@ mod tests {
         assert_eq!(
             filter_options,
             vec![
+                FilterOption::new(
+                    "active".to_string(),
+                    HashMap::from_iter([("true".to_string(), 2), ("false".to_string(), 1)])
+                ),
                 FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
                 FilterOption::new(
                     "name".to_string(),
@@ -590,10 +514,10 @@ mod tests {
                 FilterOption::new(
                     "sport".to_string(),
                     HashMap::from_iter([
-                        ("basketball".to_string(), 1),
-                        ("football".to_string(), 2)
+                        ("Basketball".to_string(), 1),
+                        ("Football".to_string(), 2)
                     ]),
-                ),
+                )
             ]
         );
     }
@@ -613,7 +537,7 @@ mod tests {
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
-            FieldValue::String(ROGER.name.to_string()),
+            FieldValue::String("Roger".to_string()),
         ));
         let matches = runner.engine.query(query);
 
@@ -635,7 +559,7 @@ mod tests {
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
-            FieldValue::String(CRISTIANO_RONALDO.name.to_string()),
+            FieldValue::String("Cristiano Ronaldo".to_string()),
         ));
         let matches = runner.engine.query(query);
 
