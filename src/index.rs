@@ -211,9 +211,11 @@ impl NumericIndex {
     }
 
     fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .get_numeric()
-            .expect("Numeric index only allows to insert numeric values.");
+        let value = match value {
+            FieldValue::Integer(value) => OrderedFloat(value as f64),
+            FieldValue::Decimal(value) => value,
+            _ => panic!("Numeric index only allows to insert numeric values."),
+        };
 
         self.inner.put(value, position);
     }
