@@ -101,6 +101,28 @@ mod tests {
     }
 
     #[test]
+    fn query_bool_eq_filter() {
+        // given
+        let runner = STORAGES.start_runner(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+        ]);
+
+        let filter = CompositeFilter::eq("active", FieldValue::bool(false));
+
+        // when
+        let mut matches = runner
+            .engine
+            .query(QueryExecution::new().with_filter(filter));
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(matches, vec![MICHAEL_JORDAN.clone()]);
+    }
+
+    #[test]
     fn query_date_ge_filter() {
         // given
         let runner = STORAGES.start_runner(vec![

@@ -61,9 +61,23 @@ pub(crate) enum Index {
     Numeric(NumericIndex),
     Date(DateIndex),
     Enum(EnumIndex),
+    Bool(BoolIndex),
 }
 
 impl Index {
+    pub(crate) fn create_descriptor(&self) -> TypeDescriptor {
+        match self {
+            Index::String(_) => TypeDescriptor::String,
+            Index::Numeric(_) => TypeDescriptor::Numeric,
+            Index::Date(_) => TypeDescriptor::Date,
+            Index::Enum(index) => {
+                let values = HashSet::from_iter(index.values.iter().cloned());
+                TypeDescriptor::Enum(values)
+            }
+            Index::Bool(_) => TypeDescriptor::Bool,
+        }
+    }
+
     pub(crate) fn from_type(value: &TypeDescriptor) -> Self {
         match value {
             TypeDescriptor::String => Index::String(StringIndex::new()),
@@ -72,6 +86,7 @@ impl Index {
             TypeDescriptor::Enum(names) => {
                 Index::Enum(EnumIndex::new(IndexSet::from_iter(names.clone())))
             }
+            TypeDescriptor::Bool => Index::Bool(BoolIndex::new()),
         }
     }
 
@@ -81,6 +96,7 @@ impl Index {
             Index::Numeric(index) => index.filter(op),
             Index::Date(index) => index.filter(op),
             Index::Enum(index) => index.filter(op),
+            Index::Bool(index) => index.filter(op),
         }
     }
 
@@ -90,6 +106,7 @@ impl Index {
             Index::Numeric(index) => index.inner.sort(items, direction),
             Index::Date(index) => index.inner.sort(items, direction),
             Index::Enum(index) => index.inner.sort(items, direction),
+            Index::Bool(index) => index.inner.sort(items, direction),
         }
     }
 
@@ -99,6 +116,7 @@ impl Index {
             Index::Numeric(index) => index.put(value, position),
             Index::Date(index) => index.put(value, position),
             Index::Enum(index) => index.put(value, position),
+            Index::Bool(index) => index.put(value, position),
         }
     }
 
@@ -108,6 +126,7 @@ impl Index {
             Index::Numeric(index) => index.remove(value, position),
             Index::Date(index) => index.remove(value, position),
             Index::Enum(index) => index.remove(value, position),
+            Index::Bool(index) => index.remove(value, position),
         }
     }
 
@@ -117,6 +136,7 @@ impl Index {
             Index::Numeric(index) => index.inner.remove_item(position),
             Index::Date(index) => index.inner.remove_item(position),
             Index::Enum(index) => index.inner.remove_item(position),
+            Index::Bool(index) => index.inner.remove_item(position),
         }
     }
 
@@ -124,8 +144,9 @@ impl Index {
         match self {
             Index::String(index) => index.counts(items),
             Index::Numeric(index) => index.counts(items),
-            Index::Date(_) => HashMap::new(), // TODO
+            Index::Date(_) => HashMap::new(), // TODO: create ranges
             Index::Enum(index) => index.counts(items),
+            Index::Bool(index) => index.counts(items),
         }
     }
 }
@@ -393,6 +414,57 @@ impl FilterableIndex for EnumIndex {
 
     fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
         panic!("Unsupported filter operation \"between\" for enum index")
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub(crate) struct BoolIndex {
+    inner: SortableIndex<bool>,
+}
+
+impl BoolIndex {
+    fn new() -> Self {
+        BoolIndex {
+            inner: SortableIndex::default(),
+        }
+    }
+
+    fn put(&mut self, value: FieldValue, position: u32) {
+        let value = value
+            .get_bool()
+            .expect("Bool index only allows to insert bool values.");
+
+        self.inner.put(value, position);
+    }
+
+    fn remove(&mut self, value: &FieldValue, position: u32) {
+        let value = value
+            .as_bool()
+            .expect("Bool index only allows to remove bool values.");
+
+        self.inner.remove(value, position);
+    }
+
+    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+        self.inner
+            .counts(items)
+            .into_iter()
+            .map(|(value, count)| (value.to_string(), count))
+            .collect()
+    }
+}
+
+impl FilterableIndex for BoolIndex {
+    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
+        let bool_value = value
+            .as_bool()
+            .expect("Invalid value for \"equal\" filter. Expected bool value.");
+
+        self.inner.get(bool_value).cloned()
+    }
+
+    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
+        panic!("Unsupported filter operation \"between\" for bool index")
     }
 }
 
