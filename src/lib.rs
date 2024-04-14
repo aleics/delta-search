@@ -1,4 +1,5 @@
 #![feature(iter_array_chunks)]
+#![feature(iter_intersperse)]
 
 use crate::data::{DataItem, DataItemId};
 use crate::query::{FilterOption, OptionsQueryExecution, QueryExecution};
@@ -39,6 +40,10 @@ impl Engine {
 
     pub fn clear(&mut self) {
         self.storage.clear()
+    }
+
+    pub fn create_index(&mut self, command: CreateFieldIndex) {
+        self.storage.create_indices(vec![command]);
     }
 }
 

@@ -1,78 +1,23 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Bound;
+use std::panic;
 
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::{MultiOps, RoaringBitmap};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
-use time::Date;
+use time::{Date, OffsetDateTime, Time};
 
+use crate::data::FieldValue;
 use crate::query::{FilterOperation, FilterResult, SortDirection};
-use crate::{DataItemId, FieldValue};
 
-pub trait Indexable {
-    fn id(&self) -> DataItemId;
-
-    fn index_values(&self) -> Vec<IndexableValue>;
-}
-
-pub struct IndexableValue {
-    pub(crate) name: String,
-    pub(crate) value: FieldValue,
-    pub(crate) descriptor: TypeDescriptor,
-}
-
-impl IndexableValue {
-    pub fn string(name: String, value: String) -> Self {
-        IndexableValue {
-            name,
-            value: FieldValue::string(value),
-            descriptor: TypeDescriptor::String,
-        }
-    }
-
-    pub fn numeric(name: String, value: f64) -> Self {
-        IndexableValue {
-            name,
-            value: FieldValue::numeric(value),
-            descriptor: TypeDescriptor::Numeric,
-        }
-    }
-
-    pub fn enumerate(name: String, value: String, possibilities: HashSet<String>) -> Self {
-        if !possibilities.contains(&value) {
-            panic!(
-                "Invalid enumerate index for \"{}\". Value \"{}\" not found in possibilities \"{:?}\"",
-                name,
-                value,
-                possibilities
-            );
-        }
-
-        IndexableValue {
-            name,
-            value: FieldValue::string(value),
-            descriptor: TypeDescriptor::Enum(possibilities),
-        }
-    }
-
-    pub fn date_iso(name: String, value: &str) -> Self {
-        let date = Date::parse(value, &Iso8601::DEFAULT)
-            .unwrap_or_else(|err| panic!("Date could not be parsed: {}", err));
-
-        IndexableValue {
-            name,
-            value: FieldValue::date(date),
-            descriptor: TypeDescriptor::Date,
-        }
-    }
-}
-
-pub(crate) enum TypeDescriptor {
+#[derive(Clone)]
+pub enum TypeDescriptor {
     String,
     Numeric,
     Date,
+    Bool,
     Enum(HashSet<String>),
 }
 
@@ -254,7 +199,7 @@ impl NumericIndex {
 
     fn remove(&mut self, value: &FieldValue, position: u32) {
         let value = value
-            .as_numeric()
+            .as_decimal()
             .expect("Numeric index only allows to remove numeric values.");
 
         self.inner.remove(value, position);
@@ -272,7 +217,7 @@ impl NumericIndex {
 impl FilterableIndex for NumericIndex {
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
         let numeric_value = value
-            .as_numeric()
+            .as_decimal()
             .expect("Invalid value for \"equal\" filter. Expected numeric value.");
 
         self.inner.get(numeric_value).cloned()
@@ -285,13 +230,13 @@ impl FilterableIndex for NumericIndex {
     ) -> Option<RoaringBitmap> {
         let first_bound = first.map(|value| {
             value
-                .as_numeric()
+                .as_decimal()
                 .expect("Invalid \"between\" filter value. Expected numeric value.")
         });
 
         let second_bound = second.map(|value| {
             value
-                .as_numeric()
+                .as_decimal()
                 .expect("Invalid \"between\" filter value. Expected numeric value.")
         });
 
@@ -318,18 +263,30 @@ impl DateIndex {
         Self::default()
     }
 
+    fn parse_value(value: &FieldValue) -> Option<i64> {
+        match value {
+            FieldValue::String(string) => {
+                let date = Date::parse(string, &Iso8601::DEFAULT)
+                    .unwrap_or_else(|err| panic!("Date could not be parsed: {}", err));
+
+                let offset_date = OffsetDateTime::new_utc(date, Time::MIDNIGHT);
+
+                Some(offset_date.unix_timestamp())
+            }
+            _ => None,
+        }
+    }
+
     fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .get_date_epoch()
-            .expect("Date index only allows to insert date values.");
+        let value =
+            DateIndex::parse_value(&value).expect("Date index only allows to insert date values.");
 
         self.inner.put(value, position);
     }
 
     fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .get_date_epoch()
-            .expect("Date index only allows to remove date values.");
+        let value =
+            DateIndex::parse_value(value).expect("Date index only allows to remove date values.");
 
         self.inner.remove(&value, position);
     }
@@ -337,8 +294,7 @@ impl DateIndex {
 
 impl FilterableIndex for DateIndex {
     fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let date_value = value
-            .get_date_epoch()
+        let date_value = DateIndex::parse_value(value)
             .expect("Invalid value for \"equal\" filter. Expected date value.");
 
         self.inner.get(&date_value).cloned()
@@ -350,14 +306,12 @@ impl FilterableIndex for DateIndex {
         second: Bound<&FieldValue>,
     ) -> Option<RoaringBitmap> {
         let first_bound = first.map(|value| {
-            value
-                .get_date_epoch()
+            DateIndex::parse_value(value)
                 .expect("Invalid \"between\" filter value. Expected date value.")
         });
 
         let second_bound = second.map(|value| {
-            value
-                .get_date_epoch()
+            DateIndex::parse_value(value)
                 .expect("Invalid \"between\" filter value. Expected date value.")
         });
 

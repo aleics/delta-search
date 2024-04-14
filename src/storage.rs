@@ -4,9 +4,9 @@ use std::path::Path;
 use heed::types::*;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
-use serde::{Deserialize, Serialize};
 
-use crate::index::{Index, Indexable};
+use crate::data::DataItem;
+use crate::index::{Index, TypeDescriptor};
 use crate::DataItemId;
 
 pub(crate) const DB_FOLDER: &str = "./delta-db";
@@ -35,7 +35,7 @@ impl StorageBuilder {
         }
     }
 
-    pub fn build<T: Indexable + 'static>(&self) -> EntityStorage<T> {
+    pub fn build(&self) -> EntityStorage {
         let name = self
             .name
             .as_ref()
@@ -46,14 +46,15 @@ impl StorageBuilder {
 }
 
 /// Storage in disk using `LMDB` for the data and their related indices.
-pub struct EntityStorage<T> {
+pub struct EntityStorage {
     env: Env,
-    data: Database<OwnedType<DataItemId>, SerdeBincode<T>>,
+    data: Database<OwnedType<DataItemId>, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
+    index_descriptors: HashMap<String, TypeDescriptor>,
 }
 
-impl<T: 'static> EntityStorage<T> {
+impl EntityStorage {
     /// Initialises a new `DiskStorage` instance by creating the necessary files
     /// and LMDB `Database` entries.
     pub fn init(name: &str) -> Self {
@@ -68,42 +69,79 @@ impl<T: 'static> EntityStorage<T> {
             .open(path)
             .unwrap();
 
-        let data: Database<OwnedType<DataItemId>, SerdeBincode<T>> =
-            env.create_database(Some(DATA_DB_NAME)).unwrap();
-        let indices: Database<Str, SerdeBincode<Index>> =
-            env.create_database(Some(INDICES_DB_NAME)).unwrap();
-        let documents: Database<Str, SerdeBincode<RoaringBitmap>> =
-            env.create_database(Some(DOCUMENTS_DB_NAME)).unwrap();
+        let data = env.create_database(Some(DATA_DB_NAME)).unwrap_or_else(|_| {
+            panic!(
+                "Could not create database for storing data in entity {}",
+                name
+            )
+        });
+        let indices = env
+            .create_database(Some(INDICES_DB_NAME))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not create database for storing indices in entity {}",
+                    name
+                )
+            });
+        let documents = env
+            .create_database(Some(DOCUMENTS_DB_NAME))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not create database for storing documents in entity {}",
+                    name
+                )
+            });
 
-        EntityStorage {
+        let mut storage = EntityStorage {
             env,
             indices,
             documents,
             data,
+            index_descriptors: HashMap::new(),
+        };
+
+        storage.propagate_indices();
+
+        storage
+    }
+
+    /// Propagate the index data into other in-memory data used for faster access to certain
+    /// properties and reduce deserialization overhead while running certain operations.
+    fn propagate_indices(&mut self) {
+        let txn = self.env.read_txn().unwrap();
+
+        let entries = self
+            .indices
+            .iter(&txn)
+            .expect("Could not read indices while creating cache")
+            .map(|entry| entry.expect("Could not read index entry while creating cache"));
+
+        for (name, index) in entries {
+            self.index_descriptors
+                .insert(name.to_string(), index.create_descriptor());
         }
     }
 
+    /// Get the current entity's storage path.
     pub(crate) fn get_path(&self) -> &Path {
         self.env.path()
     }
-}
 
-impl<T: Indexable + Serialize> EntityStorage<T> {
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
-    pub fn carry<I>(&self, data: I)
+    pub fn carry<I>(&mut self, data: I)
     where
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item = DataItem>,
     {
         self.clear();
         self.add_multiple(data);
     }
 
-    /// Add multiple items by a provided data iterator. The data is added into the storage
-    /// in chunks to reduce (de)serialization overhead.
-    pub fn add_multiple<I>(&self, data: I)
+    /// Add multiple items using chunks so that multiple transactions are commited, depending on
+    /// the amount of chunks generated.
+    fn add_multiple<I>(&self, data: I)
     where
-        I: IntoIterator<Item = T>,
+        I: IntoIterator<Item = DataItem>,
     {
         // Add elements in chunks to optimise the storing execution write operations in bulk.
         let mut chunks = data.into_iter().array_chunks::<100>();
@@ -118,48 +156,57 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
     }
 
     /// Clears the current storage indices and data.
-    pub fn clear(&self) {
+    pub fn clear(&mut self) {
         let mut txn = self.env.write_txn().unwrap();
 
+        self.data
+            .clear(&mut txn)
+            .expect("Could not clear data_items");
         self.indices
             .clear(&mut txn)
-            .expect("Could not clear indices.");
-        self.data.clear(&mut txn).expect("Could not clear data.");
+            .expect("Could not clear indices");
+        self.documents
+            .clear(&mut txn)
+            .expect("Could not clear documents");
+        self.index_descriptors.clear();
 
         txn.commit().unwrap();
     }
 
-    /// Adds a small slice of items into the DB by extracting its index values.
-    pub fn add(&self, items: &[T]) {
+    /// Store an amount of items in the database using a single transaction.
+    /// Any index is as well updated with the stored items after the transaction
+    /// is committed.
+    pub fn add(&self, items: &[DataItem]) {
         let mut txn = self.env.write_txn().unwrap();
 
-        let mut all = self.get_all_positions(&txn).unwrap_or_default();
         let mut indices_to_store: HashMap<String, Index> = HashMap::new();
+        let mut all = self.get_all_positions(&txn).unwrap_or_default();
 
         for item in items {
             // Read item ID and determine position
-            let id = item.id();
-            let position = id_to_position(id);
+            let position = id_to_position(item.id);
 
             // Insert item in the data DB
-            self.data.put(&mut txn, &id, item).unwrap();
+            self.data.put(&mut txn, &item.id, item).unwrap();
 
             // Update indices in memory with the item data to reduce (de)serialization overhead
             // if we update index one by one in the DB.
-            for index_value in item.index_values() {
-                let value = index_value.value.clone();
+            for (index_name, index_descriptor) in &self.index_descriptors {
+                let Some(value) = item.fields.get(index_name).cloned() else {
+                    continue;
+                };
 
-                if let Some(index) = indices_to_store.get_mut(&index_value.name) {
+                if let Some(index) = indices_to_store.get_mut(index_name) {
                     index.put(value, position);
                 } else {
                     let mut index = self
                         .indices
-                        .get(&txn, &index_value.name)
+                        .get(&txn, index_name)
                         .unwrap()
-                        .unwrap_or_else(|| Index::from_type(&index_value.descriptor));
+                        .unwrap_or_else(|| Index::from_type(index_descriptor));
 
                     index.put(value, position);
-                    indices_to_store.insert(index_value.name, index);
+                    indices_to_store.insert(index_name.clone(), index);
                 }
             }
 
@@ -176,6 +223,61 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
         txn.commit().unwrap();
     }
 
+    /// Create new indices in the database defined by the provided commands.
+    ///
+    /// In case data is already stored, it will be propagated to the fresh
+    /// created indices.
+    ///
+    /// In case the name used for the new index already exists, the existing
+    /// index will be overwritten by the fresh one.
+    pub fn create_indices(&mut self, commands: Vec<CreateFieldIndex>) {
+        let mut txn = self.env.write_txn().unwrap();
+
+        let mut indices_to_store: HashMap<&String, Index> = HashMap::new();
+
+        let items = self
+            .data
+            .iter(&txn)
+            .expect("Could not read data to create index")
+            .map(|entry| entry.expect("Could not read entry while reading data to create index"));
+
+        let mut descriptors = HashMap::new();
+
+        // Iterate over each item and populate the data to the new indices
+        for (id, item) in items {
+            for command in &commands {
+                let Some(value) = item.fields.get(&command.name).cloned() else {
+                    continue;
+                };
+
+                let position = id_to_position(id);
+
+                if let Some(index) = indices_to_store.get_mut(&command.name) {
+                    index.put(value, position);
+                } else {
+                    // Create the new index and appended in memory, after it's populated
+                    // with the item's data it will be stored.
+                    let mut index = self
+                        .read_index(&txn, &command.name)
+                        .unwrap_or_else(|| Index::from_type(&command.descriptor));
+
+                    index.put(value, position);
+                    indices_to_store.insert(&command.name, index);
+                    descriptors.insert(command.name.clone(), command.descriptor.clone());
+                }
+            }
+        }
+
+        // Update the stored indices with the new entries
+        for (name, index) in indices_to_store {
+            self.indices.put(&mut txn, name, &index).unwrap();
+        }
+
+        self.index_descriptors.extend(descriptors);
+
+        txn.commit().unwrap();
+    }
+
     /// Removes a number of items at once from the DB by their IDs.
     pub fn remove(&self, ids: &[DataItemId]) {
         let mut txn = self.env.write_txn().unwrap();
@@ -185,29 +287,32 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
             // Remove item from data and ID to position mapping
             let present = self.data.delete(&mut txn, id).unwrap();
             if !present {
-                return;
+                continue;
             }
 
-            let position = id_to_position(*id);
-
-            let mut entries = self
-                .indices
-                .iter_mut(&mut txn)
-                .expect("Could not iterate indices from the DB.");
-
-            while let Some(entry) = entries.next() {
-                let (key, mut value) = entry
-                    .map(|(key, value)| (key.to_string(), value))
-                    .expect("Could not read entry while iterating indices from the DB.");
-
-                value.remove_item(position);
-                entries.put_current(&key, &value).unwrap();
-            }
-
-            drop(entries);
-
-            positions_to_delete.push(position);
+            // Categorize the item's position to be removed
+            positions_to_delete.push(id_to_position(*id));
         }
+
+        // Remove positions from the indices
+        let mut entries = self
+            .indices
+            .iter_mut(&mut txn)
+            .expect("Could not iterate indices from the DB.");
+
+        while let Some(entry) = entries.next() {
+            let (key, mut index) = entry
+                .map(|(key, value)| (key.to_string(), value))
+                .expect("Could not read entry while iterating indices from the DB.");
+
+            for position in &positions_to_delete {
+                index.remove_item(*position);
+            }
+
+            entries.put_current(&key, &index).unwrap();
+        }
+
+        drop(entries);
 
         // Remove positions from all the items that need to be deleted.
         if let Some(mut all) = self.get_all_positions(&txn) {
@@ -278,15 +383,13 @@ impl<T: Indexable + Serialize> EntityStorage<T> {
             .documents
             .get(&txn, ALL_ITEMS_KEY)
             .expect("Could not read ALL items index from DB.")
-            .expect("ALL items index is not present in DB");
+            .unwrap_or_default();
 
         EntityIndices { field_indices, all }
     }
-}
 
-impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
-    /// Read an item from the DB by its ID.
-    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Option<T> {
+    /// Read a data item from the storage using its identifier.
+    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Option<DataItem> {
         let txn = self.env.read_txn().unwrap();
 
         self.data
@@ -295,11 +398,16 @@ impl<T: Clone + for<'a> Deserialize<'a>> EntityStorage<T> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct EntityIndices {
     /// Indices available associated by data's field name
     pub(crate) field_indices: HashMap<String, Index>,
 
     /// Bitmap including all items' positions
     pub(crate) all: RoaringBitmap,
+}
+
+pub struct CreateFieldIndex {
+    pub name: String,
+    pub descriptor: TypeDescriptor,
 }

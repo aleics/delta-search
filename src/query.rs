@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
-use crate::index::{Index, Indexable};
+use crate::data::{DataItem, DataItemId, FieldValue};
+use crate::index::Index;
 use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorage};
-use crate::{DataItemId, FieldValue};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterOption {
     pub field: String,
     pub values: HashMap<String, u64>,
@@ -19,6 +19,7 @@ impl FilterOption {
     }
 }
 
+#[derive(Debug)]
 struct QueryIndices {
     stored: EntityIndices,
     deltas: HashMap<String, Index>,
@@ -32,30 +33,25 @@ impl QueryIndices {
         }
     }
 
-    fn attach_deltas<T>(mut self, deltas: &[BoxedDelta<T>]) -> Self
-    where
-        T: Indexable + Serialize,
-    {
+    fn attach_deltas(mut self, deltas: &[DeltaChange]) -> Self {
         for delta in deltas {
-            let change = delta.change();
-
             // Clone the existing index into the `deltas` related index
-            if let Some(current) = self.stored.field_indices.get(&change.scope.field_name) {
-                if !self.deltas.contains_key(&change.scope.field_name) {
+            if let Some(current) = self.stored.field_indices.get(&delta.scope.field_name) {
+                if !self.deltas.contains_key(&delta.scope.field_name) {
                     self.deltas
-                        .insert(change.scope.field_name.to_string(), current.clone());
+                        .insert(delta.scope.field_name.to_string(), current.clone());
                 }
             }
 
             // Apply the change to the delta related index
-            if let Some(delta_index) = self.deltas.get_mut(&change.scope.field_name) {
-                let position = id_to_position(change.scope.id);
-                if let Some(before) = change.before.as_ref() {
+            if let Some(delta_index) = self.deltas.get_mut(&delta.scope.field_name) {
+                let position = id_to_position(delta.scope.id);
+                if let Some(before) = delta.before.as_ref() {
                     delta_index.remove(before, position);
                 }
 
-                if let Some(after) = change.after {
-                    delta_index.put(after, position);
+                if let Some(after) = delta.after.as_ref() {
+                    delta_index.put(after.clone(), position);
                 }
             }
         }
@@ -123,13 +119,14 @@ impl QueryIndices {
     }
 }
 
-pub struct OptionsQueryExecution<T> {
+#[derive(Default)]
+pub struct OptionsQueryExecution {
     filter: Option<CompositeFilter>,
-    deltas: Vec<BoxedDelta<T>>,
+    deltas: Vec<DeltaChange>,
     ref_fields: Option<Vec<String>>,
 }
 
-impl<T: Indexable + Serialize> OptionsQueryExecution<T> {
+impl OptionsQueryExecution {
     pub fn new() -> Self {
         OptionsQueryExecution::default()
     }
@@ -143,17 +140,12 @@ impl<T: Indexable + Serialize> OptionsQueryExecution<T> {
         self
     }
 
-    pub fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
-    where
-        D: Delta<Value = T> + 'static,
-    {
-        for delta in deltas {
-            self.deltas.push(Box::new(delta));
-        }
+    pub fn with_deltas(mut self, deltas: Vec<DeltaChange>) -> Self {
+        self.deltas.extend(deltas);
         self
     }
 
-    pub fn run(self, storage: &EntityStorage<T>) -> Vec<FilterOption> {
+    pub fn run(self, storage: &EntityStorage) -> Vec<FilterOption> {
         // Read the indices from storage. In case no fields are referenced, use all indices
         // as filter options.
         let indices = match self.ref_fields {
@@ -173,25 +165,16 @@ impl<T: Indexable + Serialize> OptionsQueryExecution<T> {
     }
 }
 
-impl<T> Default for OptionsQueryExecution<T> {
-    fn default() -> Self {
-        OptionsQueryExecution {
-            filter: None,
-            deltas: Vec::new(),
-            ref_fields: None,
-        }
-    }
-}
-
-pub struct QueryExecution<T> {
+#[derive(Default)]
+pub struct QueryExecution {
     filter: Option<CompositeFilter>,
-    deltas: Vec<BoxedDelta<T>>,
+    deltas: Vec<DeltaChange>,
     sort: Option<Sort>,
     pagination: Option<Pagination>,
     ref_fields: Vec<String>,
 }
 
-impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<T> {
+impl QueryExecution {
     pub fn new() -> Self {
         QueryExecution::default()
     }
@@ -202,13 +185,8 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
         self
     }
 
-    pub fn with_deltas<D>(mut self, deltas: Vec<D>) -> Self
-    where
-        D: Delta<Value = T> + 'static,
-    {
-        for delta in deltas {
-            self.deltas.push(Box::new(delta));
-        }
+    pub fn with_deltas(mut self, deltas: Vec<DeltaChange>) -> Self {
+        self.deltas.extend(deltas);
         self
     }
 
@@ -223,7 +201,7 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
         self
     }
 
-    pub fn run(self, storage: &EntityStorage<T>) -> Vec<T> {
+    pub fn run(self, storage: &EntityStorage) -> Vec<DataItem> {
         let indices =
             QueryIndices::new(storage.read_indices(&self.ref_fields)).attach_deltas(&self.deltas);
 
@@ -251,12 +229,12 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
         filter_result.hits.iter().map(position_to_id).collect()
     }
 
-    fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage<T>) -> Vec<T> {
+    fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage) -> Vec<DataItem> {
         let mut data = Vec::new();
 
-        let deltas_by_id: HashMap<DataItemId, Vec<&BoxedDelta<T>>> =
+        let deltas_by_id: HashMap<DataItemId, Vec<&DeltaChange>> =
             self.deltas.iter().fold(HashMap::new(), |mut acc, delta| {
-                let key = delta.change().scope.id;
+                let key = delta.scope.id;
                 acc.entry(key).or_default().push(delta);
                 acc
             });
@@ -264,30 +242,25 @@ impl<T: Indexable + Clone + Serialize + for<'a> Deserialize<'a>> QueryExecution<
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            if let Some(mut item) = storage.read_by_id(id) {
-                if let Some(deltas) = deltas_by_id.get(id) {
-                    for delta in deltas {
-                        delta.apply_data(&mut item);
-                    }
-                }
+            let Some(mut item) = storage.read_by_id(id) else {
+                continue;
+            };
 
-                data.push(item);
+            if let Some(deltas) = deltas_by_id.get(id) {
+                for delta in deltas {
+                    let Some(after) = delta.after.as_ref() else {
+                        continue;
+                    };
+
+                    item.fields
+                        .insert(delta.scope.field_name.clone(), after.clone());
+                }
             }
+
+            data.push(item);
         }
 
         data
-    }
-}
-
-impl<T: Indexable + Clone> Default for QueryExecution<T> {
-    fn default() -> Self {
-        QueryExecution {
-            filter: None,
-            deltas: Vec::new(),
-            sort: None,
-            pagination: None,
-            ref_fields: Vec::new(),
-        }
     }
 }
 
@@ -451,22 +424,13 @@ pub enum FilterOperation {
     LessThanOrEqual(FieldValue),
 }
 
-pub trait Delta {
-    type Value;
-
-    fn change(&self) -> DeltaChange;
-
-    fn apply_data(&self, value: &mut Self::Value);
-}
-
-type BoxedDelta<T> = Box<dyn Delta<Value = T>>;
-
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaScope {
     id: DataItemId,
     field_name: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct DeltaChange {
     scope: DeltaScope,
     before: Option<FieldValue>,
