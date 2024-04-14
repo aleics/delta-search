@@ -1,16 +1,45 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::index::{Indexable, IndexableValue};
-use crate::query::{Delta, DeltaChange};
-use crate::storage::{EntityStorage, StorageBuilder};
-use crate::{DataItemId, Engine, FieldValue};
+use crate::data::FieldValue;
+use crate::index::TypeDescriptor;
+use crate::query::DeltaChange;
+use crate::storage::{CreateFieldIndex, EntityStorage, StorageBuilder};
+use crate::{DataItem, DataItemId, Engine};
+
+pub fn michael_jordan() -> DataItem {
+    Player::new(0, "Michael Jordan", Sport::Basketball, "1963-02-17", false)
+        .with_score(10.0)
+        .as_item()
+}
+
+pub fn lionel_messi() -> DataItem {
+    Player::new(1, "Lionel Messi", Sport::Football, "1987-06-24", true)
+        .with_score(9.0)
+        .as_item()
+}
+
+pub fn cristiano_ronaldo() -> DataItem {
+    Player::new(2, "Cristiano Ronaldo", Sport::Football, "1985-02-05", true)
+        .with_score(9.0)
+        .as_item()
+}
+
+pub fn roger() -> DataItem {
+    Player::new(3, "Roger", Sport::Football, "1996-05-01", false)
+        .with_score(5.0)
+        .as_item()
+}
+
+pub fn david() -> DataItem {
+    Player::new(4, "David", Sport::Basketball, "1974-10-01", false).as_item()
+}
 
 pub(crate) struct TestPlayerRunner {
-    pub(crate) engine: Engine<Player>,
+    pub(crate) engine: Engine,
 }
 
 impl TestPlayerRunner {
@@ -48,25 +77,25 @@ impl TestRunners {
         }
     }
 
-    pub(crate) fn start_runner(&self, players: Vec<Player>) -> TestPlayerRunner {
-        let runner = self
+    pub(crate) fn start_runner(&self, items: Vec<DataItem>) -> TestPlayerRunner {
+        let mut runner = self
             .runners
             .lock()
             .unwrap()
             .pop()
             .expect("No storages left - make sure you didn't exceed the test count");
 
-        runner.engine.storage.carry(players);
+        carry_players(items, &mut runner.engine.storage);
 
         runner
     }
 }
 
-pub fn create_random_players(count: usize) -> Vec<Player> {
+pub fn create_random_players(count: usize) -> Vec<DataItem> {
     (0..count).map(create_player_from_index).collect()
 }
 
-pub fn create_player_from_index(index: usize) -> Player {
+pub fn create_player_from_index(index: usize) -> DataItem {
     let base = if index % 2 == 0 {
         10.0
     } else {
@@ -83,41 +112,82 @@ pub fn create_player_from_index(index: usize) -> Player {
             Sport::Football
         },
         birth_date: "2000-01-01".to_string(),
+        active: true,
     }
+    .as_item()
 }
 
-pub fn create_players_storage(name: &str, data: Vec<Player>) -> EntityStorage<Player> {
-    let storage = StorageBuilder::new(name).build();
-    storage.carry(data);
+pub fn create_players_storage(name: &str, data: Vec<DataItem>) -> EntityStorage {
+    let mut storage = StorageBuilder::new(name).build();
+    carry_players(data, &mut storage);
 
     storage
 }
 
-pub fn decrease_score_deltas(data: &[Player], size: usize) -> Vec<DecreaseScoreDelta> {
+fn carry_players(items: Vec<DataItem>, storage: &mut EntityStorage) {
+    storage.carry(items);
+
+    storage.create_indices(vec![
+        CreateFieldIndex {
+            name: "name".to_string(),
+            descriptor: TypeDescriptor::String,
+        },
+        CreateFieldIndex {
+            name: "sport".to_string(),
+            descriptor: TypeDescriptor::Enum(HashSet::from_iter([
+                Sport::Basketball.as_string(),
+                Sport::Football.as_string(),
+            ])),
+        },
+        CreateFieldIndex {
+            name: "birth_date".to_string(),
+            descriptor: TypeDescriptor::Date,
+        },
+        CreateFieldIndex {
+            name: "score".to_string(),
+            descriptor: TypeDescriptor::Numeric,
+        },
+        CreateFieldIndex {
+            name: "active".to_string(),
+            descriptor: TypeDescriptor::Bool,
+        },
+    ]);
+}
+
+pub fn decrease_score_deltas(data: &[DataItem], size: usize) -> Vec<DeltaChange> {
     let mut deltas = Vec::new();
 
-    for player in data.iter().take(size) {
-        if let Some(score) = player.score {
-            deltas.push(DecreaseScoreDelta::new(player.id, score));
+    for item in data.iter().take(size) {
+        if let Some(score) = item
+            .fields
+            .get("score")
+            .and_then(|field| field.as_decimal())
+            .copied()
+        {
+            deltas.push(DecreaseScoreDelta::create(item.id, score.into()));
         }
     }
 
     deltas
 }
 
-pub fn switch_sports_deltas(data: &[Player], size: usize) -> Vec<SwitchSportsDelta> {
+pub fn switch_sports_deltas(data: &[DataItem], size: usize) -> Vec<DeltaChange> {
     let mut deltas = Vec::new();
 
-    for player in data.iter().take(size) {
-        let new_sport = match player.sport {
+    for item in data.iter().take(size) {
+        let previous = item
+            .fields
+            .get("sport")
+            .and_then(|field| field.as_string())
+            .and_then(|sport| Sport::try_from_string(sport))
+            .unwrap();
+
+        let new_sport = match previous {
             Sport::Basketball => Sport::Football,
             Sport::Football => Sport::Basketball,
         };
-        deltas.push(SwitchSportsDelta::new(
-            player.id,
-            player.sport.clone(),
-            new_sport,
-        ));
+
+        deltas.push(SwitchSportsDelta::create(item.id, previous, new_sport));
     }
 
     deltas
@@ -132,8 +202,16 @@ pub enum Sport {
 impl Sport {
     pub fn as_string(&self) -> String {
         match self {
-            Sport::Basketball => "basketball".to_string(),
-            Sport::Football => "football".to_string(),
+            Sport::Basketball => "Basketball".to_string(),
+            Sport::Football => "Football".to_string(),
+        }
+    }
+
+    pub fn try_from_string(string: &str) -> Option<Sport> {
+        match string {
+            "Basketball" => Some(Sport::Basketball),
+            "Football" => Some(Sport::Football),
+            _ => None,
         }
     }
 }
@@ -145,16 +223,18 @@ pub struct Player {
     pub score: Option<f64>,
     pub sport: Sport,
     pub birth_date: String,
+    pub active: bool,
 }
 
 impl Player {
-    pub fn new(id: usize, name: &str, sport: Sport, birth_date: &str) -> Self {
+    pub fn new(id: usize, name: &str, sport: Sport, birth_date: &str, active: bool) -> Self {
         Player {
             id,
             name: name.to_string(),
             score: None,
             sport,
             birth_date: birth_date.to_string(),
+            active,
         }
     }
 
@@ -162,90 +242,41 @@ impl Player {
         self.score = Some(score);
         self
     }
-}
 
-impl Indexable for Player {
-    fn id(&self) -> DataItemId {
-        self.id
-    }
+    pub fn as_item(&self) -> DataItem {
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), FieldValue::str(&self.name));
+        fields.insert(
+            "sport".to_string(),
+            FieldValue::str(&self.sport.as_string()),
+        );
+        fields.insert("birth_date".to_string(), FieldValue::str(&self.birth_date));
+        fields.insert("active".to_string(), FieldValue::Bool(self.active));
 
-    fn index_values(&self) -> Vec<IndexableValue> {
-        let mut values = vec![
-            IndexableValue::string("name".to_string(), self.name.to_string()),
-            IndexableValue::enumerate(
-                "sport".to_string(),
-                self.sport.as_string(),
-                HashSet::from_iter([Sport::Basketball.as_string(), Sport::Football.as_string()]),
-            ),
-            IndexableValue::date_iso("birth_date".to_string(), &self.birth_date),
-        ];
-
-        if let Some(score) = &self.score {
-            values.push(IndexableValue::numeric("score".to_string(), *score));
+        if let Some(score) = self.score {
+            fields.insert("score".to_string(), FieldValue::dec(score));
         }
 
-        values
+        DataItem::new(self.id, fields)
     }
 }
 
-#[derive(Clone)]
-pub struct DecreaseScoreDelta {
-    id: DataItemId,
-    before: f64,
-    after: f64,
-}
+pub struct DecreaseScoreDelta;
 
 impl DecreaseScoreDelta {
-    pub(crate) fn new(id: DataItemId, score: f64) -> Self {
-        DecreaseScoreDelta {
-            id,
-            before: score,
-            after: score - 1.0,
-        }
+    pub(crate) fn create(id: DataItemId, score: f64) -> DeltaChange {
+        DeltaChange::new(id, "score".to_string())
+            .before(FieldValue::dec(score))
+            .after(FieldValue::dec(score - 1.0))
     }
 }
 
-impl Delta for DecreaseScoreDelta {
-    type Value = Player;
-
-    fn change(&self) -> DeltaChange {
-        DeltaChange::new(self.id, "score".to_string())
-            .before(FieldValue::numeric(self.before))
-            .after(FieldValue::numeric(self.after))
-    }
-
-    // TODO: if the DB should be accessible via REST API, this would not work
-    // TODO: we could serialise the provided data as a simple key-value map, and change the values on the map
-    fn apply_data(&self, value: &mut Self::Value) {
-        if let Some(score) = value.score.as_mut() {
-            *score = self.after;
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct SwitchSportsDelta {
-    id: DataItemId,
-    before: Sport,
-    after: Sport,
-}
+pub struct SwitchSportsDelta;
 
 impl SwitchSportsDelta {
-    pub fn new(id: DataItemId, before: Sport, after: Sport) -> Self {
-        SwitchSportsDelta { id, before, after }
-    }
-}
-
-impl Delta for SwitchSportsDelta {
-    type Value = Player;
-
-    fn change(&self) -> DeltaChange {
-        DeltaChange::new(self.id, "sport".to_string())
-            .before(FieldValue::string(self.before.as_string()))
-            .after(FieldValue::string(self.after.as_string()))
-    }
-
-    fn apply_data(&self, value: &mut Self::Value) {
-        value.sport = self.after.clone();
+    pub fn create(id: DataItemId, before: Sport, after: Sport) -> DeltaChange {
+        DeltaChange::new(id, "sport".to_string())
+            .before(FieldValue::String(before.as_string()))
+            .after(FieldValue::String(after.as_string()))
     }
 }

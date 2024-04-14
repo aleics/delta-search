@@ -5,6 +5,7 @@ use test::Bencher;
 
 use lazy_static::lazy_static;
 
+use delta_search::data::FieldValue;
 use delta_search::fixtures::{
     create_players_storage, create_random_players, decrease_score_deltas, switch_sports_deltas,
     Player, Sport,
@@ -12,14 +13,14 @@ use delta_search::fixtures::{
 use delta_search::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
 };
-use delta_search::{Engine, FieldValue};
+use delta_search::Engine;
 
 const COUNT: usize = 10000;
 const PAGE_SIZE: usize = 500;
 
 lazy_static! {
     static ref PAGINATION: Pagination = Pagination::new(0, PAGE_SIZE);
-    static ref ENGINE: Engine<Player> = Engine::new(create_players_storage(
+    static ref ENGINE: Engine = Engine::new(create_players_storage(
         "players_bench",
         create_random_players(COUNT)
     ));
@@ -28,7 +29,7 @@ lazy_static! {
 #[bench]
 fn bench_filter_numeric_eq(b: &mut Bencher) {
     b.iter(move || {
-        let filter = CompositeFilter::eq("score", FieldValue::numeric(10.0));
+        let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
         let query = QueryExecution::new()
             .with_filter(filter)
             .with_pagination(*PAGINATION);
@@ -40,11 +41,8 @@ fn bench_filter_numeric_eq(b: &mut Bencher) {
 #[bench]
 fn bench_filter_numeric_between(b: &mut Bencher) {
     b.iter(move || {
-        let filter = CompositeFilter::between(
-            "score",
-            FieldValue::numeric(0.0),
-            FieldValue::numeric(100.0),
-        );
+        let filter =
+            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
         let query = QueryExecution::new()
             .with_filter(filter)
             .with_pagination(*PAGINATION);
@@ -58,11 +56,7 @@ fn bench_filter_or(b: &mut Bencher) {
     b.iter(move || {
         let filter = CompositeFilter::or(vec![
             CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
-            CompositeFilter::between(
-                "score",
-                FieldValue::numeric(0.0),
-                FieldValue::numeric(100.0),
-            ),
+            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
         ]);
         let query = QueryExecution::new()
             .with_filter(filter)
