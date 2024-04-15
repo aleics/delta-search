@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use delta_search::data::FieldValue;
 use delta_search::fixtures::{
     create_players_storage, create_random_players, decrease_score_deltas, switch_sports_deltas,
-    Player, Sport,
+    Sport,
 };
 use delta_search::query::{
     CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
@@ -20,10 +20,11 @@ const PAGE_SIZE: usize = 500;
 
 lazy_static! {
     static ref PAGINATION: Pagination = Pagination::new(0, PAGE_SIZE);
-    static ref ENGINE: Engine = Engine::new(create_players_storage(
-        "players_bench",
+    static ref NAME: String = "players_bench".to_string();
+    static ref ENGINE: Engine = Engine::with_entities(vec![create_players_storage(
+        &NAME,
         create_random_players(COUNT)
-    ));
+    )]);
 }
 
 #[bench]
@@ -34,7 +35,7 @@ fn bench_filter_numeric_eq(b: &mut Bencher) {
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(query);
+        ENGINE.query(&NAME, query);
     });
 }
 
@@ -47,7 +48,7 @@ fn bench_filter_numeric_between(b: &mut Bencher) {
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(query);
+        ENGINE.query(&NAME, query);
     });
 }
 
@@ -62,7 +63,7 @@ fn bench_filter_or(b: &mut Bencher) {
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(query);
+        ENGINE.query(&NAME, query);
     });
 }
 
@@ -74,13 +75,13 @@ fn bench_sort(b: &mut Bencher) {
             .with_sort(sort)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(query);
+        ENGINE.query(&NAME, query);
     });
 }
 
 #[bench]
 fn bench_filter_options(b: &mut Bencher) {
-    b.iter(move || ENGINE.options(OptionsQueryExecution::new()));
+    b.iter(move || ENGINE.options(&NAME, OptionsQueryExecution::new()));
 }
 
 #[bench]
@@ -95,6 +96,6 @@ fn bench_apply_deltas(b: &mut Bencher) {
             .with_deltas(switch_sports_deltas.clone())
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(query);
+        ENGINE.query(&NAME, query);
     });
 }

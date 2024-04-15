@@ -1,10 +1,12 @@
 #![feature(iter_array_chunks)]
 #![feature(iter_intersperse)]
 
+use std::collections::HashMap;
+use std::slice;
+
 use crate::data::{DataItem, DataItemId};
 use crate::query::{FilterOption, OptionsQueryExecution, QueryExecution};
-use crate::storage::{CreateFieldIndex, EntityStorage};
-use std::slice;
+use crate::storage::{CreateFieldIndex, EntityStorage, StorageBuilder};
 
 pub mod data;
 #[cfg(feature = "test-fixtures")]
@@ -14,36 +16,76 @@ pub mod query;
 pub mod storage;
 
 pub struct Engine {
-    storage: EntityStorage,
+    entities: HashMap<String, EntityStorage>,
 }
 
 impl Engine {
-    pub fn new(storage: EntityStorage) -> Self {
-        Engine { storage }
+    pub fn init() -> Self {
+        let mut entities = HashMap::new();
+
+        for name in storage::read_stored_entity_names() {
+            let storage = StorageBuilder::new(&name).build();
+            entities.insert(name, storage);
+        }
+
+        Engine { entities }
     }
 
-    pub fn query(&self, execution: QueryExecution) -> Vec<DataItem> {
-        execution.run(&self.storage)
+    pub fn with_entities(entries: Vec<EntityStorage>) -> Self {
+        let mut entities = HashMap::new();
+        for entry in entries {
+            entities.insert(entry.id.clone(), entry);
+        }
+        Engine { entities }
     }
 
-    pub fn options(&self, execution: OptionsQueryExecution) -> Vec<FilterOption> {
-        execution.run(&self.storage)
+    pub fn create_entity(&mut self, name: String) {
+        if self.entities.contains_key(&name) {
+            panic!("Entity with name \"{}\" already exists", name);
+        }
+
+        let entity = StorageBuilder::new(&name).build();
+        self.entities.insert(name, entity);
     }
 
-    pub fn add(&mut self, item: &DataItem) {
-        self.storage.add(slice::from_ref(item));
+    pub fn query(&self, name: &str, execution: QueryExecution) -> Vec<DataItem> {
+        if let Some(entity) = self.entities.get(name) {
+            execution.run(entity)
+        } else {
+            Vec::new()
+        }
     }
 
-    pub fn remove(&mut self, id: &DataItemId) {
-        self.storage.remove(slice::from_ref(id));
+    pub fn options(&self, name: &str, execution: OptionsQueryExecution) -> Vec<FilterOption> {
+        if let Some(entity) = self.entities.get(name) {
+            execution.run(entity)
+        } else {
+            Vec::new()
+        }
     }
 
-    pub fn clear(&mut self) {
-        self.storage.clear()
+    pub fn add(&mut self, name: &str, item: &DataItem) {
+        if let Some(entity) = self.entities.get_mut(name) {
+            entity.add(slice::from_ref(item));
+        }
     }
 
-    pub fn create_index(&mut self, command: CreateFieldIndex) {
-        self.storage.create_indices(vec![command]);
+    pub fn remove(&mut self, name: &str, id: &DataItemId) {
+        if let Some(entity) = self.entities.get_mut(name) {
+            entity.remove(slice::from_ref(id));
+        }
+    }
+
+    pub fn clear(&mut self, name: &str) {
+        if let Some(entity) = self.entities.get_mut(name) {
+            entity.clear();
+        }
+    }
+
+    pub fn create_index(&mut self, name: &str, command: CreateFieldIndex) {
+        if let Some(entity) = self.entities.get_mut(name) {
+            entity.create_indices(vec![command]);
+        }
     }
 }
 
@@ -89,7 +131,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -114,7 +156,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -137,7 +179,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -164,7 +206,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -189,7 +231,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -211,7 +253,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -233,7 +275,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -259,7 +301,7 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -291,6 +333,7 @@ mod tests {
 
         // when
         let mut matches = runner.engine.query(
+            &runner.name,
             QueryExecution::new()
                 .with_filter(filter)
                 .with_deltas(deltas),
@@ -334,6 +377,7 @@ mod tests {
 
         // when
         let mut matches = runner.engine.query(
+            &runner.name,
             QueryExecution::new()
                 .with_filter(filter)
                 .with_deltas(deltas),
@@ -371,6 +415,7 @@ mod tests {
 
         // when
         let matches = runner.engine.query(
+            &runner.name,
             QueryExecution::new()
                 .with_filter(filter)
                 .with_sort(sort)
@@ -403,7 +448,9 @@ mod tests {
         let sort = Sort::new("score").with_direction(SortDirection::ASC);
 
         // when
-        let matches = runner.engine.query(QueryExecution::new().with_sort(sort));
+        let matches = runner
+            .engine
+            .query(&runner.name, QueryExecution::new().with_sort(sort));
 
         // then
         assert_eq!(
@@ -430,7 +477,9 @@ mod tests {
         let sort = Sort::new("score").with_direction(SortDirection::DESC);
 
         // when
-        let matches = runner.engine.query(QueryExecution::new().with_sort(sort));
+        let matches = runner
+            .engine
+            .query(&runner.name, QueryExecution::new().with_sort(sort));
 
         // then
         assert_eq!(
@@ -456,7 +505,9 @@ mod tests {
         ]);
 
         // when
-        let mut filter_options = runner.engine.options(OptionsQueryExecution::new());
+        let mut filter_options = runner
+            .engine
+            .options(&runner.name, OptionsQueryExecution::new());
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -511,9 +562,10 @@ mod tests {
         let filter = CompositeFilter::ge("score", FieldValue::dec(8.0));
 
         // when
-        let mut filter_options = runner
-            .engine
-            .options(OptionsQueryExecution::new().with_filter(filter));
+        let mut filter_options = runner.engine.options(
+            &runner.name,
+            OptionsQueryExecution::new().with_filter(filter),
+        );
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -559,14 +611,14 @@ mod tests {
         ]);
 
         // when
-        runner.engine.add(&ROGER);
+        runner.engine.add(&runner.name, &ROGER);
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Roger".to_string()),
         ));
-        let matches = runner.engine.query(query);
+        let matches = runner.engine.query(&runner.name, query);
 
         assert_eq!(matches, vec![ROGER.clone()]);
     }
@@ -581,14 +633,14 @@ mod tests {
         ]);
 
         // when
-        runner.engine.remove(&CRISTIANO_RONALDO.id);
+        runner.engine.remove(&runner.name, &CRISTIANO_RONALDO.id);
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Cristiano Ronaldo".to_string()),
         ));
-        let matches = runner.engine.query(query);
+        let matches = runner.engine.query(&runner.name, query);
 
         assert!(matches.is_empty());
     }

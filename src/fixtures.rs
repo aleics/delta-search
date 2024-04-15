@@ -39,6 +39,7 @@ pub fn david() -> DataItem {
 }
 
 pub(crate) struct TestPlayerRunner {
+    pub(crate) name: String,
     pub(crate) engine: Engine,
 }
 
@@ -48,13 +49,16 @@ impl TestPlayerRunner {
         let storage = StorageBuilder::new(&name).build();
 
         TestPlayerRunner {
-            engine: Engine::new(storage),
+            engine: Engine::with_entities(vec![storage]),
+            name,
         }
     }
 
     fn clean_up(&self) {
-        let path = self.engine.storage.get_path();
-        fs::remove_dir_all(path).unwrap();
+        for storage in self.engine.entities.values() {
+            let path = storage.get_path();
+            fs::remove_dir_all(path).unwrap();
+        }
     }
 }
 
@@ -85,7 +89,9 @@ impl TestRunners {
             .pop()
             .expect("No storages left - make sure you didn't exceed the test count");
 
-        carry_players(items, &mut runner.engine.storage);
+        if let Some(entity) = runner.engine.entities.get_mut(&runner.name) {
+            carry_players(items, entity);
+        }
 
         runner
     }

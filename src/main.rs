@@ -1,15 +1,15 @@
 use std::sync::{Arc, RwLock};
 
+use axum::extract::{Path, State};
+use axum::routing::{get, post, put};
 use axum::{response::Json, Router};
-use axum::extract::State;
-use axum::routing::{get, put};
 use serde::Deserialize;
 
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
-use delta_search::Engine;
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{FilterOption, OptionsQueryExecution};
-use delta_search::storage::{CreateFieldIndex, StorageBuilder};
+use delta_search::storage::CreateFieldIndex;
+use delta_search::Engine;
 
 #[derive(Clone)]
 struct SearchEngine {
@@ -18,28 +18,31 @@ struct SearchEngine {
 
 impl SearchEngine {
     fn init() -> SearchEngine {
-        let storage = StorageBuilder::new("players_prod").build();
-
         SearchEngine {
-            inner: Arc::new(RwLock::new(Engine::new(storage))),
+            inner: Arc::new(RwLock::new(Engine::init())),
         }
     }
 
-    fn add_items(&self, items: Vec<DataItemInput>) {
+    fn create_entity(&self, name: &str) {
+        let mut engine = self.inner.write().unwrap();
+        engine.create_entity(name.to_string());
+    }
+
+    fn add_items(&self, name: &str, items: Vec<DataItemInput>) {
         let mut engine = self.inner.write().unwrap();
 
         for input_item in items {
             let item = DataItem::new(input_item.id, input_item.fields.inner);
-            engine.add(&item)
+            engine.add(name, &item)
         }
     }
 
-    fn options(&self) -> Vec<FilterOption> {
+    fn options(&self, name: &str) -> Vec<FilterOption> {
         let engine = self.inner.read().unwrap();
-        engine.options(OptionsQueryExecution::new())
+        engine.options(name, OptionsQueryExecution::new())
     }
 
-    fn create_index(&self, input: CreateIndexInput) {
+    fn create_index(&self, name: &str, input: CreateIndexInput) {
         let mut engine = self.inner.write().unwrap();
 
         let descriptor = match input.kind {
@@ -49,10 +52,12 @@ impl SearchEngine {
             CreateIndexTypeInput::Bool => TypeDescriptor::Bool,
         };
 
-        engine.create_index(CreateFieldIndex {
+        let command = CreateFieldIndex {
             name: input.name,
             descriptor,
-        })
+        };
+
+        engine.create_index(name, command)
     }
 }
 
@@ -65,19 +70,25 @@ async fn main() {
     let search_engine = SearchEngine::init();
 
     let app = Router::new()
-        // Storage endpoints
-        .route("/entities", put(upsert_entity))
+        .route("/entities/:entity_name", post(create_entity))
         // Search endpoints
-        .route("/options", get(get_options))
+        .route("/:entity_name/options", get(get_options))
+        // Storage endpoints
+        .route("/data/:entity_name", put(bulk_upsert_entity))
         // Index endpoints
-        .route("/indices", put(create_index))
+        .route("/indices/:entity_name", put(create_index))
         .with_state(search_engine);
 
     axum::serve(listener, app).await.unwrap();
 }
 
+async fn create_entity(State(search): State<SearchEngine>, Path(name): Path<String>) -> Json<()> {
+    search.create_entity(&name);
+    Json(())
+}
+
 #[derive(Deserialize)]
-struct UpsertEntityInput {
+struct BulkUpsertEntity {
     data: Vec<DataItemInput>,
 }
 
@@ -87,16 +98,20 @@ struct DataItemInput {
     fields: DataItemFieldsInput,
 }
 
-async fn upsert_entity(
+async fn bulk_upsert_entity(
     State(search): State<SearchEngine>,
-    Json(input): Json<UpsertEntityInput>,
+    Path(name): Path<String>,
+    Json(input): Json<BulkUpsertEntity>,
 ) -> Json<()> {
-    search.add_items(input.data);
+    search.add_items(&name, input.data);
     Json(())
 }
 
-async fn get_options(State(search): State<SearchEngine>) -> Json<Vec<FilterOption>> {
-    let options = search.options();
+async fn get_options(
+    State(search): State<SearchEngine>,
+    Path(name): Path<String>,
+) -> Json<Vec<FilterOption>> {
+    let options = search.options(&name);
     Json(options)
 }
 
@@ -119,8 +134,9 @@ enum CreateIndexTypeInput {
 
 async fn create_index(
     State(search): State<SearchEngine>,
+    Path(name): Path<String>,
     Json(input): Json<CreateIndexInput>,
 ) -> Json<()> {
-    search.create_index(input);
+    search.create_index(&name, input);
     Json(())
 }

@@ -20,8 +20,10 @@ fn main() {
     let michael_jordan_id = michael_jordan.id;
     let lionel_messi_id = lionel_messi.id;
 
-    let storage = create_players_storage(
-        "players_example_simple",
+    let name = "players_example_simple";
+
+    let entity = create_players_storage(
+        name,
         vec![
             michael_jordan,
             lionel_messi,
@@ -31,9 +33,9 @@ fn main() {
         ],
     );
 
-    let mut engine = Engine::new(storage);
+    let mut engine = Engine::with_entities(vec![entity]);
 
-    let filter_options = engine.options(OptionsQueryExecution::new());
+    let filter_options = engine.options(name, OptionsQueryExecution::new());
 
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
@@ -43,11 +45,12 @@ fn main() {
             FieldValue::String(Sport::Basketball.as_string()),
         ))
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
-    let players = engine.query(query);
+    let players = engine.query(name, query);
 
     println!("Basketball players sorted by score: {:?}", players);
 
     let players = engine.query(
+        name,
         QueryExecution::new()
             .with_filter(CompositeFilter::between(
                 "birth_date",
@@ -72,21 +75,24 @@ fn main() {
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
         .with_deltas(switch_sports);
 
-    let players = engine.query(query);
+    let players = engine.query(name, query);
 
     println!(
         "Basketball players sorted by score after switching sports: {:?}",
         players
     );
 
-    engine.remove(&4);
+    engine.remove(name, &4);
 
     println!("Basketball players sorted by score: {:?}", players);
 
-    let players = engine.query(QueryExecution::new().with_filter(CompositeFilter::eq(
-        "sport",
-        FieldValue::String(Sport::Basketball.as_string()),
-    )));
+    let players = engine.query(
+        name,
+        QueryExecution::new().with_filter(CompositeFilter::eq(
+            "sport",
+            FieldValue::String(Sport::Basketball.as_string()),
+        )),
+    );
 
     println!("Players playing basketball after deletion: {:?}", players);
 }

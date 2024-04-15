@@ -24,6 +24,31 @@ pub(crate) fn id_to_position(id: DataItemId) -> u32 {
     u32::try_from(id).expect("ID could not be mapped into an index position")
 }
 
+pub(crate) fn read_stored_entity_names() -> Vec<String> {
+    let mut names = Vec::new();
+    let Ok(paths) = std::fs::read_dir(DB_FOLDER) else {
+        return names;
+    };
+
+    for path in paths {
+        let path_buf = path.unwrap().path();
+        let path = path_buf.as_path();
+
+        let is_mdb = path
+            .extension()
+            .map(|extension| extension == "mdb")
+            .unwrap_or(false);
+
+        if is_mdb {
+            if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
+                names.push(name.to_string())
+            }
+        }
+    }
+
+    names
+}
+
 pub struct StorageBuilder {
     name: Option<String>,
 }
@@ -47,6 +72,7 @@ impl StorageBuilder {
 
 /// Storage in disk using `LMDB` for the data and their related indices.
 pub struct EntityStorage {
+    pub(crate) id: String,
     env: Env,
     data: Database<OwnedType<DataItemId>, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
@@ -93,6 +119,7 @@ impl EntityStorage {
             });
 
         let mut storage = EntityStorage {
+            id: name.to_string(),
             env,
             indices,
             documents,
