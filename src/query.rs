@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use pest::iterators::Pair;
+use pest::Parser;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 
@@ -264,7 +266,7 @@ impl QueryExecution {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CompositeFilter {
     And(Vec<CompositeFilter>),
     Or(Vec<CompositeFilter>),
@@ -408,13 +410,13 @@ impl Sort {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Filter {
     name: String,
     operation: FilterOperation,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum FilterOperation {
     Eq(FieldValue),
     Between(FieldValue, FieldValue),
@@ -454,5 +456,181 @@ impl DeltaChange {
     pub fn after(mut self, after: FieldValue) -> Self {
         self.after = Some(after);
         self
+    }
+}
+
+#[derive(pest_derive::Parser)]
+#[grammar_inline = r#"
+    WHITESPACE = _{ " " }
+    NAME_CHAR  = _{ ASCII_ALPHA | "." }
+    name       =  { NAME_CHAR+ }
+    number     = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+    string     =  { "\"" ~ ASCII_ALPHA* ~ "\"" }
+    boolean    =  { "true" | "false" }
+    array      =  { "[" ~ "]" | "[" ~ value ~ ("," ~ value)* ~ "]" }
+    value      =  { number | string | boolean | array }
+
+    comparison_operator = { "=" | "!=" | ">=" | "<=" | ">" | "<" }
+    logical_operator    = { "&&" | "||" }
+
+    statement = { "("{0, 1} ~ name ~ SPACE_SEPARATOR* ~ comparison_operator ~ value ~ ")"{0, 1} }
+    composite = { "("{0, 1} ~ statement ~ logical_operator* ~ composite* ~ ")"{0, 1} }
+"#]
+pub(crate) struct FilterParser;
+
+impl FilterParser {
+    pub(crate) fn parse_query(input: &str) -> CompositeFilter {
+        let mut pairs = Self::parse(Rule::composite, input).unwrap();
+        Self::parse_statement(pairs.next().unwrap())
+    }
+
+    fn parse_statement(pair: Pair<Rule>) -> CompositeFilter {
+        match pair.as_rule() {
+            Rule::WHITESPACE
+            | Rule::NAME_CHAR
+            | Rule::name
+            | Rule::number
+            | Rule::string
+            | Rule::boolean
+            | Rule::array
+            | Rule::value
+            | Rule::comparison_operator
+            | Rule::logical_operator => unreachable!(),
+            Rule::statement => {
+                let mut inner = pair.into_inner();
+
+                let name = inner
+                    .next()
+                    .expect("Could not find name in statement rule")
+                    .as_str();
+
+                let operator = inner
+                    .next()
+                    .expect("Could not find comparison_operator in statement rule")
+                    .as_str();
+
+                let value = inner
+                    .next()
+                    .expect("Could not find value in statement rule");
+
+                let value = Self::parse_value(value);
+
+                match operator {
+                    "=" => CompositeFilter::eq(name, value),
+                    ">=" => CompositeFilter::ge(name, value),
+                    "<=" => CompositeFilter::le(name, value),
+                    ">" => CompositeFilter::gt(name, value),
+                    "<" => CompositeFilter::lt(name, value),
+                    "!=" => CompositeFilter::negate(CompositeFilter::eq(name, value)),
+                    _ => panic!("Unknown comparison operator \"{}\"", operator),
+                }
+            }
+            Rule::composite => {
+                let mut inner = pair.into_inner();
+
+                let left = inner
+                    .next()
+                    .expect("Could not find left statement in composite rule");
+
+                let Some(operator) = inner.next() else {
+                    return Self::parse_statement(left);
+                };
+
+                let right = inner
+                    .next()
+                    .expect("Could not right left statement in composite rule");
+
+                let left = Self::parse_statement(left);
+                let right = Self::parse_statement(right);
+
+                let operator = operator.as_str();
+                match operator {
+                    "&&" => CompositeFilter::And(vec![left, right]),
+                    "||" => CompositeFilter::Or(vec![left, right]),
+                    _ => panic!("Unknown boolean operator \"{}\"", operator),
+                }
+            }
+        }
+    }
+
+    fn parse_value(pair: Pair<Rule>) -> FieldValue {
+        match pair.as_rule() {
+            Rule::WHITESPACE
+            | Rule::NAME_CHAR
+            | Rule::name
+            | Rule::comparison_operator
+            | Rule::logical_operator
+            | Rule::statement
+            | Rule::composite => unreachable!(),
+            Rule::value => {
+                let value = pair
+                    .into_inner()
+                    .next()
+                    .expect("Value does not include any inner value.");
+                Self::parse_value(value)
+            }
+            Rule::number => {
+                let value = pair
+                    .as_str()
+                    .parse()
+                    .expect("Numeric value could not be parsed as f64.");
+                FieldValue::dec(value)
+            }
+            Rule::string => {
+                let value = pair
+                    .as_str()
+                    // Remove double quotes from beginning and end (as stated in the grammar)
+                    .trim_start_matches('"')
+                    .trim_end_matches('"');
+                FieldValue::str(value)
+            }
+            Rule::boolean => {
+                let value = pair
+                    .as_str()
+                    .parse()
+                    .expect("Boolean value could not be parsed as bool.");
+                FieldValue::Bool(value)
+            }
+            Rule::array => {
+                let value = pair.into_inner().map(Self::parse_value).collect();
+                FieldValue::Array(value)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::FieldValue;
+    use crate::query::{CompositeFilter, FilterParser};
+
+    #[test]
+    fn creates_simple_filter() {
+        // given
+        let input = "(person.name != \"Michael Jordan\") && (score > 1 || active = true && (person.name.simple = \"Roger\" || score <= 5))";
+
+        // when
+        let result = FilterParser::parse_query(input);
+
+        // then
+        assert_eq!(
+            result,
+            CompositeFilter::and(vec![
+                CompositeFilter::negate(CompositeFilter::eq(
+                    "person.name",
+                    FieldValue::str("Michael Jordan")
+                )),
+                CompositeFilter::or(vec![
+                    CompositeFilter::gt("score", FieldValue::dec(1.0)),
+                    CompositeFilter::and(vec![
+                        CompositeFilter::eq("active", FieldValue::bool(true)),
+                        CompositeFilter::or(vec![
+                            CompositeFilter::eq("person.name.simple", FieldValue::str("Roger")),
+                            CompositeFilter::le("score", FieldValue::dec(5.0)),
+                        ])
+                    ])
+                ])
+            ])
+        )
     }
 }
