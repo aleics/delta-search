@@ -3,11 +3,11 @@ use std::sync::{Arc, RwLock};
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{response::Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
 use delta_search::index::TypeDescriptor;
-use delta_search::query::{FilterOption, OptionsQueryExecution};
+use delta_search::query::{FilterOption, FilterParser, OptionsQueryExecution, QueryExecution};
 use delta_search::storage::CreateFieldIndex;
 use delta_search::Engine;
 
@@ -35,6 +35,18 @@ impl SearchEngine {
             let item = DataItem::new(input_item.id, input_item.fields.inner);
             engine.add(name, &item)
         }
+    }
+
+    fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
+        let engine = self.inner.read().unwrap();
+
+        let mut execution = QueryExecution::new();
+
+        if let Some(filter) = &input.filter {
+            execution = execution.with_filter(FilterParser::parse_query(filter));
+        }
+
+        engine.query(name, execution)
     }
 
     fn options(&self, name: &str) -> Vec<FilterOption> {
@@ -71,12 +83,13 @@ async fn main() {
 
     let app = Router::new()
         .route("/entities/:entity_name", post(create_entity))
-        // Search endpoints
-        .route("/:entity_name/options", get(get_options))
         // Storage endpoints
         .route("/data/:entity_name", put(bulk_upsert_entity))
         // Index endpoints
         .route("/indices/:entity_name", put(create_index))
+        // Search endpoints
+        .route("/indices/:entity_name/options", get(get_options))
+        .route("/indices/:entity_name/search", post(query))
         .with_state(search_engine);
 
     axum::serve(listener, app).await.unwrap();
@@ -139,4 +152,25 @@ async fn create_index(
 ) -> Json<()> {
     search.create_index(&name, input);
     Json(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryIndexInput {
+    filter: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryResponse {
+    data: Vec<DataItem>,
+}
+
+async fn query(
+    State(search): State<SearchEngine>,
+    Path(name): Path<String>,
+    Json(input): Json<QueryIndexInput>,
+) -> Json<QueryResponse> {
+    let data = search.query(&name, input);
+    Json(QueryResponse { data })
 }

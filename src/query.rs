@@ -482,10 +482,10 @@ impl DeltaChange {
     statement = { "("{0, 1} ~ name ~ SPACE_SEPARATOR* ~ comparison_operator ~ value ~ ")"{0, 1} }
     composite = { "("{0, 1} ~ statement ~ logical_operator* ~ composite* ~ ")"{0, 1} }
 "#]
-pub(crate) struct FilterParser;
+pub struct FilterParser;
 
 impl FilterParser {
-    pub(crate) fn parse_query(input: &str) -> CompositeFilter {
+    pub fn parse_query(input: &str) -> CompositeFilter {
         let mut pairs = Self::parse(Rule::composite, input).unwrap();
         Self::parse_statement(pairs.next().unwrap())
     }
