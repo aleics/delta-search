@@ -284,6 +284,65 @@ mod tests {
     }
 
     #[test]
+    fn query_and_filter() {
+        // given
+        let runner = STORAGES.start_runner(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+
+        let filter = CompositeFilter::and(vec![
+            CompositeFilter::ge("score", FieldValue::dec(2.0)),
+            CompositeFilter::eq("active", FieldValue::Bool(false)),
+        ]);
+
+        // when
+        let mut matches = runner
+            .engine
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(matches, vec![MICHAEL_JORDAN.clone(), ROGER.clone()]);
+    }
+
+    #[test]
+    fn query_or_filter() {
+        // given
+        let runner = STORAGES.start_runner(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+            ROGER.clone(),
+        ]);
+
+        let filter = CompositeFilter::or(vec![
+            CompositeFilter::ge("score", FieldValue::dec(9.0)),
+            CompositeFilter::le("birth_date", FieldValue::str("1990-01-01")),
+        ]);
+
+        // when
+        let mut matches = runner
+            .engine
+            .query(&runner.name, QueryExecution::new().with_filter(filter));
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches,
+            vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone()
+            ]
+        );
+    }
+
+    #[test]
     fn query_not_filter() {
         // given
         let runner = STORAGES.start_runner(vec![

@@ -70,14 +70,20 @@ impl QueryIndices {
         match filter {
             CompositeFilter::And(filters) => {
                 let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
-                    acc.map(|current| current.and(self.execute_filter(filter)))
+                    let inner = acc
+                        .map(|current| current.and(self.execute_filter(filter)))
+                        .unwrap_or_else(|| self.execute_filter(filter));
+                    Some(inner)
                 });
 
                 result.unwrap_or_else(FilterResult::empty)
             }
             CompositeFilter::Or(filters) => {
                 let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
-                    acc.map(|current| current.or(self.execute_filter(filter)))
+                    let inner = acc
+                        .map(|current| current.or(self.execute_filter(filter)))
+                        .unwrap_or_else(|| self.execute_filter(filter));
+                    Some(inner)
                 });
 
                 result.unwrap_or_else(FilterResult::empty)
