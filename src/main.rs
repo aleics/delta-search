@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{
-    FilterOption, FilterParser, OptionsQueryExecution, Pagination, QueryExecution,
+    FilterOption, FilterParser, OptionsQueryExecution, Pagination, QueryExecution, Sort,
+    SortDirection,
 };
 use delta_search::storage::CreateFieldIndex;
 use delta_search::Engine;
@@ -54,6 +55,15 @@ impl SearchEngine {
 
         if let Some(filter) = &input.filter {
             execution = execution.with_filter(FilterParser::parse_query(filter));
+        }
+
+        if let Some(sort) = &input.sort {
+            let direction = match sort.direction {
+                SortDirectionInput::Asc => SortDirection::ASC,
+                SortDirectionInput::Desc => SortDirection::DESC,
+            };
+
+            execution = execution.with_sort(Sort::new(&sort.by).with_direction(direction));
         }
 
         let pagination = input
@@ -180,7 +190,22 @@ async fn create_index(
 #[serde(rename_all = "camelCase")]
 struct QueryIndexInput {
     filter: Option<String>,
+    sort: Option<SortInput>,
     page: Option<PageInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SortInput {
+    by: String,
+    direction: SortDirectionInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum SortDirectionInput {
+    Asc,
+    Desc,
 }
 
 #[derive(Deserialize)]
