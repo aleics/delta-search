@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
 use delta_search::index::TypeDescriptor;
-use delta_search::query::{FilterOption, FilterParser, OptionsQueryExecution, QueryExecution};
+use delta_search::query::{
+    FilterOption, FilterParser, OptionsQueryExecution, Pagination, QueryExecution,
+};
 use delta_search::storage::CreateFieldIndex;
 use delta_search::Engine;
+
+const DEFAULT_START_PAGE: usize = 0;
+const DEFAULT_PAGE_SIZE: usize = 500;
 
 #[derive(Clone)]
 struct SearchEngine {
@@ -39,14 +44,31 @@ impl SearchEngine {
 
     fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
         let engine = self.inner.read().unwrap();
+        let execution = Self::build_query_execution(input);
 
+        engine.query(name, execution)
+    }
+
+    fn build_query_execution(input: QueryIndexInput) -> QueryExecution {
         let mut execution = QueryExecution::new();
 
         if let Some(filter) = &input.filter {
             execution = execution.with_filter(FilterParser::parse_query(filter));
         }
 
-        engine.query(name, execution)
+        let pagination = input
+            .page
+            .map(|page| {
+                Pagination::new(
+                    page.start.unwrap_or(DEFAULT_START_PAGE),
+                    page.size.unwrap_or(DEFAULT_PAGE_SIZE),
+                )
+            })
+            .unwrap_or(Pagination::new(DEFAULT_START_PAGE, DEFAULT_PAGE_SIZE));
+
+        execution = execution.with_pagination(pagination);
+
+        execution
     }
 
     fn options(&self, name: &str) -> Vec<FilterOption> {
@@ -158,6 +180,14 @@ async fn create_index(
 #[serde(rename_all = "camelCase")]
 struct QueryIndexInput {
     filter: Option<String>,
+    page: Option<PageInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInput {
+    start: Option<usize>,
+    size: Option<usize>,
 }
 
 #[derive(Serialize)]
