@@ -64,10 +64,14 @@ impl Engine {
         }
     }
 
-    pub fn add(&mut self, name: &str, item: &DataItem) {
+    pub fn add_multiple(&mut self, name: &str, items: &[DataItem]) {
         if let Some(entity) = self.entities.get_mut(name) {
-            entity.add(slice::from_ref(item));
+            entity.add(items)
         }
+    }
+
+    pub fn add(&mut self, name: &str, item: &DataItem) {
+        self.add_multiple(name, slice::from_ref(item))
     }
 
     pub fn remove(&mut self, name: &str, id: &DataItemId) {

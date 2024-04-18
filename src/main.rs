@@ -1,9 +1,10 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{response::Json, Router};
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
 use delta_search::index::TypeDescriptor;
@@ -29,25 +30,25 @@ impl SearchEngine {
         }
     }
 
-    fn create_entity(&self, name: &str) {
-        let mut engine = self.inner.write().unwrap();
-        engine.create_entity(name.to_string());
+    async fn create_entity(&self, name: &str) {
+        self.inner.write().await.create_entity(name.to_string());
     }
 
-    fn add_items(&self, name: &str, items: Vec<DataItemInput>) {
-        let mut engine = self.inner.write().unwrap();
+    async fn add_items(&self, name: &str, items: Vec<DataItemInput>) {
+        let items: Vec<DataItem> = items
+            .into_iter()
+            .map(|input_item| DataItem::new(input_item.id, input_item.fields.inner))
+            .collect();
 
-        for input_item in items {
-            let item = DataItem::new(input_item.id, input_item.fields.inner);
-            engine.add(name, &item)
-        }
+        self.inner
+            .write()
+            .await
+            .add_multiple(name, items.as_slice())
     }
 
-    fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
-        let engine = self.inner.read().unwrap();
+    async fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
         let execution = Self::build_query_execution(input);
-
-        engine.query(name, execution)
+        self.inner.read().await.query(name, execution)
     }
 
     fn build_query_execution(input: QueryIndexInput) -> QueryExecution {
@@ -81,14 +82,14 @@ impl SearchEngine {
         execution
     }
 
-    fn options(&self, name: &str) -> Vec<FilterOption> {
-        let engine = self.inner.read().unwrap();
-        engine.options(name, OptionsQueryExecution::new())
+    async fn options(&self, name: &str) -> Vec<FilterOption> {
+        self.inner
+            .read()
+            .await
+            .options(name, OptionsQueryExecution::new())
     }
 
-    fn create_index(&self, name: &str, input: CreateIndexInput) {
-        let mut engine = self.inner.write().unwrap();
-
+    async fn create_index(&self, name: &str, input: CreateIndexInput) {
         let descriptor = match input.kind {
             CreateIndexTypeInput::String => TypeDescriptor::String,
             CreateIndexTypeInput::Numeric => TypeDescriptor::Numeric,
@@ -101,7 +102,7 @@ impl SearchEngine {
             descriptor,
         };
 
-        engine.create_index(name, command)
+        self.inner.write().await.create_index(name, command);
     }
 }
 
@@ -128,7 +129,7 @@ async fn main() {
 }
 
 async fn create_entity(State(search): State<SearchEngine>, Path(name): Path<String>) -> Json<()> {
-    search.create_entity(&name);
+    search.create_entity(&name).await;
     Json(())
 }
 
@@ -148,7 +149,7 @@ async fn bulk_upsert_entity(
     Path(name): Path<String>,
     Json(input): Json<BulkUpsertEntity>,
 ) -> Json<()> {
-    search.add_items(&name, input.data);
+    search.add_items(&name, input.data).await;
     Json(())
 }
 
@@ -156,7 +157,7 @@ async fn get_options(
     State(search): State<SearchEngine>,
     Path(name): Path<String>,
 ) -> Json<Vec<FilterOption>> {
-    let options = search.options(&name);
+    let options = search.options(&name).await;
     Json(options)
 }
 
@@ -182,7 +183,7 @@ async fn create_index(
     Path(name): Path<String>,
     Json(input): Json<CreateIndexInput>,
 ) -> Json<()> {
-    search.create_index(&name, input);
+    search.create_index(&name, input).await;
     Json(())
 }
 
@@ -226,6 +227,6 @@ async fn query(
     Path(name): Path<String>,
     Json(input): Json<QueryIndexInput>,
 ) -> Json<QueryResponse> {
-    let data = search.query(&name, input);
+    let data = search.query(&name, input).await;
     Json(QueryResponse { data })
 }
