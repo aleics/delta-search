@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 use std::slice;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::data::{DataItem, DataItemId};
 use crate::query::{FilterOption, OptionsQueryExecution, QueryExecution};
@@ -15,8 +17,10 @@ pub mod index;
 pub mod query;
 pub mod storage;
 
+type EngineEntry = Arc<RwLock<EntityStorage>>;
+
 pub struct Engine {
-    entities: HashMap<String, EntityStorage>,
+    entities: HashMap<String, EngineEntry>,
 }
 
 impl Engine {
@@ -25,7 +29,7 @@ impl Engine {
 
         for name in storage::read_stored_entity_names() {
             let storage = StorageBuilder::new(&name).build();
-            entities.insert(name, storage);
+            entities.insert(name, Arc::new(RwLock::new(storage)));
         }
 
         Engine { entities }
@@ -34,7 +38,7 @@ impl Engine {
     pub fn with_entities(entries: Vec<EntityStorage>) -> Self {
         let mut entities = HashMap::new();
         for entry in entries {
-            entities.insert(entry.id.clone(), entry);
+            entities.insert(entry.id.clone(), Arc::new(RwLock::new(entry)));
         }
         Engine { entities }
     }
@@ -45,49 +49,55 @@ impl Engine {
         }
 
         let entity = StorageBuilder::new(&name).build();
-        self.entities.insert(name, entity);
+        self.entities.insert(name, Arc::new(RwLock::new(entity)));
     }
 
-    pub fn query(&self, name: &str, execution: QueryExecution) -> Vec<DataItem> {
-        if let Some(entity) = self.entities.get(name) {
-            execution.run(entity)
+    pub async fn query(&self, name: &str, execution: QueryExecution) -> Vec<DataItem> {
+        if let Some(entry) = self.entities.get(name) {
+            let entity = entry.read().await;
+            execution.run(&entity)
         } else {
             Vec::new()
         }
     }
 
-    pub fn options(&self, name: &str, execution: OptionsQueryExecution) -> Vec<FilterOption> {
-        if let Some(entity) = self.entities.get(name) {
-            execution.run(entity)
+    pub async fn options(&self, name: &str, execution: OptionsQueryExecution) -> Vec<FilterOption> {
+        if let Some(entry) = self.entities.get(name) {
+            let entity = entry.read().await;
+            execution.run(&entity)
         } else {
             Vec::new()
         }
     }
 
-    pub fn add_multiple(&mut self, name: &str, items: &[DataItem]) {
-        if let Some(entity) = self.entities.get_mut(name) {
+    pub async fn add(&self, name: &str, item: &DataItem) {
+        self.add_multiple(name, slice::from_ref(item)).await
+    }
+
+    pub async fn add_multiple(&self, name: &str, items: &[DataItem]) {
+        if let Some(entry) = self.entities.get(name) {
+            let entity = entry.read().await;
             entity.add(items)
         }
     }
 
-    pub fn add(&mut self, name: &str, item: &DataItem) {
-        self.add_multiple(name, slice::from_ref(item))
-    }
-
-    pub fn remove(&mut self, name: &str, id: &DataItemId) {
-        if let Some(entity) = self.entities.get_mut(name) {
+    pub async fn remove(&self, name: &str, id: &DataItemId) {
+        if let Some(entry) = self.entities.get(name) {
+            let entity = entry.write().await;
             entity.remove(slice::from_ref(id));
         }
     }
 
-    pub fn clear(&mut self, name: &str) {
-        if let Some(entity) = self.entities.get_mut(name) {
+    pub async fn clear(&self, name: &str) {
+        if let Some(entry) = self.entities.get(name) {
+            let mut entity = entry.write().await;
             entity.clear();
         }
     }
 
-    pub fn create_index(&mut self, name: &str, command: CreateFieldIndex) {
-        if let Some(entity) = self.entities.get_mut(name) {
+    pub async fn create_index(&self, name: &str, command: CreateFieldIndex) {
+        if let Some(entry) = self.entities.get(name) {
+            let mut entity = entry.write().await;
             entity.create_indices(vec![command]);
         }
     }
@@ -121,21 +131,24 @@ mod tests {
         static ref DAVID: DataItem = david();
     }
 
-    #[test]
-    fn query_enum_eq_filter() {
+    #[tokio::test]
+    async fn query_enum_eq_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -146,21 +159,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_bool_eq_filter() {
+    #[tokio::test]
+    async fn query_bool_eq_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::eq("active", FieldValue::bool(false));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -168,22 +184,25 @@ mod tests {
         assert_eq!(matches, vec![MICHAEL_JORDAN.clone()]);
     }
 
-    #[test]
-    fn query_date_ge_filter() {
+    #[tokio::test]
+    async fn query_date_ge_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::ge("birth_date", FieldValue::str("1990-01-01"));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -191,15 +210,17 @@ mod tests {
         assert_eq!(matches, vec![ROGER.clone()]);
     }
 
-    #[test]
-    fn query_date_between_filter() {
+    #[tokio::test]
+    async fn query_date_between_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::between(
             "birth_date",
@@ -210,7 +231,8 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -221,21 +243,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_numeric_between_filter() {
+    #[tokio::test]
+    async fn query_numeric_between_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::between("score", FieldValue::dec(6.0), FieldValue::dec(10.0));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -243,21 +268,24 @@ mod tests {
         assert_eq!(matches, vec![MICHAEL_JORDAN.clone(), LIONEL_MESSI.clone()]);
     }
 
-    #[test]
-    fn query_numeric_ge_filter() {
+    #[tokio::test]
+    async fn query_numeric_ge_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::ge("score", FieldValue::dec(6.0));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -265,21 +293,24 @@ mod tests {
         assert_eq!(matches, vec![MICHAEL_JORDAN.clone(), LIONEL_MESSI.clone()]);
     }
 
-    #[test]
-    fn query_numeric_le_filter() {
+    #[tokio::test]
+    async fn query_numeric_le_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::le("score", FieldValue::dec(6.0));
 
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -287,15 +318,17 @@ mod tests {
         assert_eq!(matches, vec![ROGER.clone()]);
     }
 
-    #[test]
-    fn query_and_filter() {
+    #[tokio::test]
+    async fn query_and_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::and(vec![
             CompositeFilter::ge("score", FieldValue::dec(2.0)),
@@ -305,7 +338,8 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -313,15 +347,17 @@ mod tests {
         assert_eq!(matches, vec![MICHAEL_JORDAN.clone(), ROGER.clone()]);
     }
 
-    #[test]
-    fn query_or_filter() {
+    #[tokio::test]
+    async fn query_or_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::or(vec![
             CompositeFilter::ge("score", FieldValue::dec(9.0)),
@@ -331,7 +367,8 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -346,15 +383,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_not_filter() {
+    #[tokio::test]
+    async fn query_not_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+            ])
+            .await;
 
         let filter = CompositeFilter::negate(CompositeFilter::eq(
             "sport",
@@ -364,7 +403,8 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter));
+            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -379,14 +419,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_numeric_delta() {
+    #[tokio::test]
+    async fn query_numeric_delta() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         let deltas = vec![
             DecreaseScoreDelta::create(0, 10.0),
@@ -395,12 +437,15 @@ mod tests {
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
-        let mut matches = runner.engine.query(
-            &runner.name,
-            QueryExecution::new()
-                .with_filter(filter)
-                .with_deltas(deltas),
-        );
+        let mut matches = runner
+            .engine
+            .query(
+                &runner.name,
+                QueryExecution::new()
+                    .with_filter(filter)
+                    .with_deltas(deltas),
+            )
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -422,14 +467,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_enum_delta() {
+    #[tokio::test]
+    async fn query_enum_delta() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         let deltas = vec![SwitchSportsDelta::create(
             0,
@@ -439,12 +486,15 @@ mod tests {
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         // when
-        let mut matches = runner.engine.query(
-            &runner.name,
-            QueryExecution::new()
-                .with_filter(filter)
-                .with_deltas(deltas),
-        );
+        let mut matches = runner
+            .engine
+            .query(
+                &runner.name,
+                QueryExecution::new()
+                    .with_filter(filter)
+                    .with_deltas(deltas),
+            )
+            .await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -467,23 +517,26 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_pagination() {
+    #[tokio::test]
+    async fn query_pagination() {
         // given
-        let runner = STORAGES.start_runner(create_random_players(20));
+        let runner = STORAGES.start_runner(create_random_players(20)).await;
 
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
         let sort = Sort::new("score");
         let pagination = Pagination::new(2, 5);
 
         // when
-        let matches = runner.engine.query(
-            &runner.name,
-            QueryExecution::new()
-                .with_filter(filter)
-                .with_sort(sort)
-                .with_pagination(pagination),
-        );
+        let matches = runner
+            .engine
+            .query(
+                &runner.name,
+                QueryExecution::new()
+                    .with_filter(filter)
+                    .with_sort(sort)
+                    .with_pagination(pagination),
+            )
+            .await;
 
         // then
         assert_eq!(
@@ -498,22 +551,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_sort_numeric_asc() {
+    #[tokio::test]
+    async fn query_sort_numeric_asc() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-            DAVID.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+                DAVID.clone(),
+            ])
+            .await;
 
         let sort = Sort::new("score").with_direction(SortDirection::ASC);
 
         // when
         let matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_sort(sort));
+            .query(&runner.name, QueryExecution::new().with_sort(sort))
+            .await;
 
         // then
         assert_eq!(
@@ -527,22 +583,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn query_sort_numeric_desc() {
+    #[tokio::test]
+    async fn query_sort_numeric_desc() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            CRISTIANO_RONALDO.clone(),
-            ROGER.clone(),
-            DAVID.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                CRISTIANO_RONALDO.clone(),
+                ROGER.clone(),
+                DAVID.clone(),
+            ])
+            .await;
 
         let sort = Sort::new("score").with_direction(SortDirection::DESC);
 
         // when
         let matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_sort(sort));
+            .query(&runner.name, QueryExecution::new().with_sort(sort))
+            .await;
 
         // then
         assert_eq!(
@@ -556,21 +615,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compute_all_filter_options() {
+    #[tokio::test]
+    async fn compute_all_filter_options() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            CRISTIANO_RONALDO.clone(),
-            LIONEL_MESSI.clone(),
-            ROGER.clone(),
-            DAVID.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                CRISTIANO_RONALDO.clone(),
+                LIONEL_MESSI.clone(),
+                ROGER.clone(),
+                DAVID.clone(),
+            ])
+            .await;
 
         // when
         let mut filter_options = runner
             .engine
-            .options(&runner.name, OptionsQueryExecution::new());
+            .options(&runner.name, OptionsQueryExecution::new())
+            .await;
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -612,23 +674,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compute_all_filter_options_with_filter() {
+    #[tokio::test]
+    async fn compute_all_filter_options_with_filter() {
         // given
-        let runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            CRISTIANO_RONALDO.clone(),
-            LIONEL_MESSI.clone(),
-            ROGER.clone(),
-            DAVID.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                CRISTIANO_RONALDO.clone(),
+                LIONEL_MESSI.clone(),
+                ROGER.clone(),
+                DAVID.clone(),
+            ])
+            .await;
         let filter = CompositeFilter::ge("score", FieldValue::dec(8.0));
 
         // when
-        let mut filter_options = runner.engine.options(
-            &runner.name,
-            OptionsQueryExecution::new().with_filter(filter),
-        );
+        let mut filter_options = runner
+            .engine
+            .options(
+                &runner.name,
+                OptionsQueryExecution::new().with_filter(filter),
+            )
+            .await;
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -664,46 +731,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn add_item() {
+    #[tokio::test]
+    async fn add_item() {
         // given
-        let mut runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         // when
-        runner.engine.add(&runner.name, &ROGER);
+        runner.engine.add(&runner.name, &ROGER).await;
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Roger".to_string()),
         ));
-        let matches = runner.engine.query(&runner.name, query);
+        let matches = runner.engine.query(&runner.name, query).await;
 
         assert_eq!(matches, vec![ROGER.clone()]);
     }
 
-    #[test]
-    fn remove_item() {
+    #[tokio::test]
+    async fn remove_item() {
         // given
-        let mut runner = STORAGES.start_runner(vec![
-            MICHAEL_JORDAN.clone(),
-            LIONEL_MESSI.clone(),
-            CRISTIANO_RONALDO.clone(),
-        ]);
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
 
         // when
-        runner.engine.remove(&runner.name, &CRISTIANO_RONALDO.id);
+        runner
+            .engine
+            .remove(&runner.name, &CRISTIANO_RONALDO.id)
+            .await;
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Cristiano Ronaldo".to_string()),
         ));
-        let matches = runner.engine.query(&runner.name, query);
+        let matches = runner.engine.query(&runner.name, query).await;
 
         assert!(matches.is_empty());
     }

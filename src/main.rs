@@ -31,7 +31,8 @@ impl SearchEngine {
     }
 
     async fn create_entity(&self, name: &str) {
-        self.inner.write().await.create_entity(name.to_string());
+        let mut engine = self.inner.write().await;
+        engine.create_entity(name.to_string());
     }
 
     async fn add_items(&self, name: &str, items: Vec<DataItemInput>) {
@@ -40,15 +41,14 @@ impl SearchEngine {
             .map(|input_item| DataItem::new(input_item.id, input_item.fields.inner))
             .collect();
 
-        self.inner
-            .write()
-            .await
-            .add_multiple(name, items.as_slice())
+        let engine = self.inner.read().await;
+        engine.add_multiple(name, items.as_slice()).await
     }
 
     async fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
         let execution = Self::build_query_execution(input);
-        self.inner.read().await.query(name, execution)
+        let engine = self.inner.read().await;
+        engine.query(name, execution).await
     }
 
     fn build_query_execution(input: QueryIndexInput) -> QueryExecution {
@@ -83,10 +83,8 @@ impl SearchEngine {
     }
 
     async fn options(&self, name: &str) -> Vec<FilterOption> {
-        self.inner
-            .read()
-            .await
-            .options(name, OptionsQueryExecution::new())
+        let engine = self.inner.read().await;
+        engine.options(name, OptionsQueryExecution::new()).await
     }
 
     async fn create_index(&self, name: &str, input: CreateIndexInput) {
@@ -102,7 +100,8 @@ impl SearchEngine {
             descriptor,
         };
 
-        self.inner.write().await.create_index(name, command);
+        let engine = self.inner.read().await;
+        engine.create_index(name, command).await;
     }
 }
 

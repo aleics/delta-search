@@ -41,30 +41,26 @@ pub fn david() -> DataItem {
 pub(crate) struct TestPlayerRunner {
     pub(crate) name: String,
     pub(crate) engine: Engine,
+    pub(crate) path: String,
 }
 
 impl TestPlayerRunner {
     fn start(index: usize) -> Self {
         let name = format!("test_players_{}", index);
         let storage = StorageBuilder::new(&name).build();
+        let path = storage.get_path().as_os_str().to_str().unwrap().to_string();
 
         TestPlayerRunner {
             engine: Engine::with_entities(vec![storage]),
             name,
-        }
-    }
-
-    fn clean_up(&self) {
-        for storage in self.engine.entities.values() {
-            let path = storage.get_path();
-            fs::remove_dir_all(path).unwrap();
+            path,
         }
     }
 }
 
 impl Drop for TestPlayerRunner {
     fn drop(&mut self) {
-        self.clean_up()
+        fs::remove_dir_all(&self.path).unwrap();
     }
 }
 
@@ -81,7 +77,7 @@ impl TestRunners {
         }
     }
 
-    pub(crate) fn start_runner(&self, items: Vec<DataItem>) -> TestPlayerRunner {
+    pub(crate) async fn start_runner(&self, items: Vec<DataItem>) -> TestPlayerRunner {
         let mut runner = self
             .runners
             .lock()
@@ -89,8 +85,9 @@ impl TestRunners {
             .pop()
             .expect("No storages left - make sure you didn't exceed the test count");
 
-        if let Some(entity) = runner.engine.entities.get_mut(&runner.name) {
-            carry_players(items, entity);
+        if let Some(entry) = runner.engine.entities.get_mut(&runner.name) {
+            let mut entity = entry.write().await;
+            carry_players(items, &mut entity);
         }
 
         runner

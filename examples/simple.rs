@@ -8,7 +8,8 @@ use delta_search::query::{
 };
 use delta_search::Engine;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Welcome to the simple Player search!");
 
     let michael_jordan = michael_jordan();
@@ -35,7 +36,7 @@ fn main() {
 
     let mut engine = Engine::with_entities(vec![entity]);
 
-    let filter_options = engine.options(name, OptionsQueryExecution::new());
+    let filter_options = engine.options(name, OptionsQueryExecution::new()).await;
 
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
@@ -45,20 +46,22 @@ fn main() {
             FieldValue::String(Sport::Basketball.as_string()),
         ))
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
-    let players = engine.query(name, query);
+    let players = engine.query(name, query).await;
 
     println!("Basketball players sorted by score: {:?}", players);
 
-    let players = engine.query(
-        name,
-        QueryExecution::new()
-            .with_filter(CompositeFilter::between(
-                "birth_date",
-                FieldValue::str("1980-01-01"),
-                FieldValue::str("1989-12-31"),
-            ))
-            .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
-    );
+    let players = engine
+        .query(
+            name,
+            QueryExecution::new()
+                .with_filter(CompositeFilter::between(
+                    "birth_date",
+                    FieldValue::str("1980-01-01"),
+                    FieldValue::str("1989-12-31"),
+                ))
+                .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
+        )
+        .await;
 
     println!("Players born in the 80s: {:?}", players);
 
@@ -75,24 +78,26 @@ fn main() {
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
         .with_deltas(switch_sports);
 
-    let players = engine.query(name, query);
+    let players = engine.query(name, query).await;
 
     println!(
         "Basketball players sorted by score after switching sports: {:?}",
         players
     );
 
-    engine.remove(name, &4);
+    engine.remove(name, &4).await;
 
     println!("Basketball players sorted by score: {:?}", players);
 
-    let players = engine.query(
-        name,
-        QueryExecution::new().with_filter(CompositeFilter::eq(
-            "sport",
-            FieldValue::String(Sport::Basketball.as_string()),
-        )),
-    );
+    let players = engine
+        .query(
+            name,
+            QueryExecution::new().with_filter(CompositeFilter::eq(
+                "sport",
+                FieldValue::String(Sport::Basketball.as_string()),
+            )),
+        )
+        .await;
 
     println!("Players playing basketball after deletion: {:?}", players);
 }
