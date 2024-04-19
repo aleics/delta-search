@@ -30,58 +30,70 @@ lazy_static! {
 #[bench]
 fn bench_filter_numeric_eq(b: &mut Bencher) {
     b.iter(move || {
-        let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
-        let query = QueryExecution::new()
-            .with_filter(filter)
-            .with_pagination(*PAGINATION);
+        tokio_test::block_on(async {
+            let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
+            let query = QueryExecution::new()
+                .with_filter(filter)
+                .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query);
+            ENGINE.query(&NAME, query).await;
+        });
     });
 }
 
 #[bench]
 fn bench_filter_numeric_between(b: &mut Bencher) {
     b.iter(move || {
-        let filter =
-            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
-        let query = QueryExecution::new()
-            .with_filter(filter)
-            .with_pagination(*PAGINATION);
+        tokio_test::block_on(async {
+            let filter =
+                CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
+            let query = QueryExecution::new()
+                .with_filter(filter)
+                .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query);
+            ENGINE.query(&NAME, query).await;
+        });
     });
 }
 
 #[bench]
 fn bench_filter_or(b: &mut Bencher) {
     b.iter(move || {
-        let filter = CompositeFilter::or(vec![
-            CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
-            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
-        ]);
-        let query = QueryExecution::new()
-            .with_filter(filter)
-            .with_pagination(*PAGINATION);
+        tokio_test::block_on(async {
+            let filter = CompositeFilter::or(vec![
+                CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
+                CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
+            ]);
+            let query = QueryExecution::new()
+                .with_filter(filter)
+                .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query);
+            ENGINE.query(&NAME, query).await;
+        });
     });
 }
 
 #[bench]
 fn bench_sort(b: &mut Bencher) {
     b.iter(move || {
-        let sort = Sort::new("score").with_direction(SortDirection::DESC);
-        let query = QueryExecution::new()
-            .with_sort(sort)
-            .with_pagination(*PAGINATION);
+        tokio_test::block_on(async {
+            let sort = Sort::new("score").with_direction(SortDirection::DESC);
+            let query = QueryExecution::new()
+                .with_sort(sort)
+                .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query);
+            ENGINE.query(&NAME, query).await;
+        });
     });
 }
 
 #[bench]
 fn bench_filter_options(b: &mut Bencher) {
-    b.iter(move || ENGINE.options(&NAME, OptionsQueryExecution::new()));
+    b.iter(move || {
+        tokio_test::block_on(async {
+            ENGINE.options(&NAME, OptionsQueryExecution::new()).await;
+        });
+    });
 }
 
 #[bench]
@@ -91,11 +103,13 @@ fn bench_apply_deltas(b: &mut Bencher) {
     let switch_sports_deltas = switch_sports_deltas(&players, COUNT);
 
     b.iter(move || {
-        let query = QueryExecution::new()
-            .with_deltas(decrease_score_deltas.clone())
-            .with_deltas(switch_sports_deltas.clone())
-            .with_pagination(*PAGINATION);
+        tokio_test::block_on(async {
+            let query = QueryExecution::new()
+                .with_deltas(decrease_score_deltas.clone())
+                .with_deltas(switch_sports_deltas.clone())
+                .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query);
+            ENGINE.query(&NAME, query).await;
+        });
     });
 }
