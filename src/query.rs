@@ -48,13 +48,9 @@ impl QueryIndices {
             // Apply the change to the delta related index
             if let Some(delta_index) = self.deltas.get_mut(&delta.scope.field_name) {
                 let position = id_to_position(delta.scope.id);
-                if let Some(before) = delta.before.as_ref() {
-                    delta_index.remove(before, position);
-                }
+                delta_index.remove(&delta.before, position);
 
-                if let Some(after) = delta.after.as_ref() {
-                    delta_index.put(after.clone(), position);
-                }
+                delta_index.put(delta.after.clone(), position);
             }
         }
         self
@@ -256,12 +252,8 @@ impl QueryExecution {
 
             if let Some(deltas) = deltas_by_id.get(id) {
                 for delta in deltas {
-                    let Some(after) = delta.after.as_ref() else {
-                        continue;
-                    };
-
                     item.fields
-                        .insert(delta.scope.field_name.clone(), after.clone());
+                        .insert(delta.scope.field_name.clone(), delta.after.clone());
                 }
             }
 
@@ -434,34 +426,24 @@ pub enum FilterOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaScope {
-    id: DataItemId,
-    field_name: String,
+    pub id: DataItemId,
+    pub field_name: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DeltaChange {
-    scope: DeltaScope,
-    before: Option<FieldValue>,
-    after: Option<FieldValue>,
+    pub scope: DeltaScope,
+    pub before: FieldValue,
+    pub after: FieldValue,
 }
 
 impl DeltaChange {
-    pub fn new(id: DataItemId, field_name: String) -> Self {
+    pub fn new(id: DataItemId, field_name: String, before: FieldValue, after: FieldValue) -> Self {
         DeltaChange {
             scope: DeltaScope { id, field_name },
-            before: None,
-            after: None,
+            before,
+            after,
         }
-    }
-
-    pub fn before(mut self, before: FieldValue) -> Self {
-        self.before = Some(before);
-        self
-    }
-
-    pub fn after(mut self, after: FieldValue) -> Self {
-        self.after = Some(after);
-        self
     }
 }
 

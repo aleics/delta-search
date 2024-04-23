@@ -268,9 +268,12 @@ pub struct DecreaseScoreDelta;
 
 impl DecreaseScoreDelta {
     pub(crate) fn create(id: DataItemId, score: f64) -> DeltaChange {
-        DeltaChange::new(id, "score".to_string())
-            .before(FieldValue::dec(score))
-            .after(FieldValue::dec(score - 1.0))
+        DeltaChange::new(
+            id,
+            "score".to_string(),
+            FieldValue::dec(score),
+            FieldValue::dec(score - 1.0),
+        )
     }
 }
 
@@ -278,8 +281,11 @@ pub struct SwitchSportsDelta;
 
 impl SwitchSportsDelta {
     pub fn create(id: DataItemId, before: Sport, after: Sport) -> DeltaChange {
-        DeltaChange::new(id, "sport".to_string())
-            .before(FieldValue::String(before.as_string()))
-            .after(FieldValue::String(after.as_string()))
+        DeltaChange::new(
+            id,
+            "sport".to_string(),
+            FieldValue::String(before.as_string()),
+            FieldValue::String(after.as_string()),
+        )
     }
 }
