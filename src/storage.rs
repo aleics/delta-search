@@ -1,18 +1,23 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use heed::byteorder::BE;
 use heed::types::*;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
+use serde::{Deserialize, Serialize};
+use time::Date;
 
-use crate::data::DataItem;
+use crate::data::{date_to_timestamp, DataItem};
 use crate::index::{Index, TypeDescriptor};
+use crate::query::DeltaChange;
 use crate::DataItemId;
 
 pub(crate) const DB_FOLDER: &str = "./delta-db";
 const DATA_DB_NAME: &str = "data";
 const INDICES_DB_NAME: &str = "indices";
 const DOCUMENTS_DB_NAME: &str = "documents";
+const DELTAS_DB_NAME: &str = "deltas";
 
 const ALL_ITEMS_KEY: &str = "__all";
 
@@ -70,6 +75,21 @@ impl StorageBuilder {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StoredDelta {
+    before: Index,
+    after: Index,
+}
+
+impl StoredDelta {
+    fn from_type(descriptor: &TypeDescriptor) -> Self {
+        StoredDelta {
+            before: Index::from_type(descriptor),
+            after: Index::from_type(descriptor),
+        }
+    }
+}
+
 /// Storage in disk using `LMDB` for the data and their related indices.
 pub struct EntityStorage {
     pub(crate) id: String,
@@ -77,6 +97,7 @@ pub struct EntityStorage {
     data: Database<OwnedType<DataItemId>, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
+    deltas: Database<OwnedType<I64<BE>>, SerdeBincode<HashMap<String, StoredDelta>>>,
     index_descriptors: HashMap<String, TypeDescriptor>,
 }
 
@@ -118,12 +139,22 @@ impl EntityStorage {
                 )
             });
 
+        let deltas = env
+            .create_database(Some(DELTAS_DB_NAME))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Could not create database for storing deltas in entity {}",
+                    name
+                )
+            });
+
         let mut storage = EntityStorage {
             id: name.to_string(),
             env,
             indices,
             documents,
             data,
+            deltas,
             index_descriptors: HashMap::new(),
         };
 
@@ -422,6 +453,44 @@ impl EntityStorage {
         self.data
             .get(&txn, id)
             .expect("Could not read item from DB")
+    }
+
+    pub(crate) fn add_deltas(&self, date: Date, deltas: &[DeltaChange]) {
+        let timestamp = I64::<BE>::new(date_to_timestamp(date));
+
+        let mut txn = self.env.write_txn().unwrap();
+
+        let mut current = self
+            .deltas
+            .get(&txn, &timestamp)
+            .expect("Could not read deltas from DB")
+            .unwrap_or_default();
+
+        // Iterate over the deltas to create for each field name the before and after index
+        for delta in deltas {
+            let type_descriptor = self
+                .index_descriptors
+                .get(&delta.scope.field_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Could not store delta. Field name \"{}\" is not available in the DB.",
+                        &delta.scope.field_name
+                    )
+                });
+
+            let stored_delta = current
+                .entry(delta.scope.field_name.clone())
+                .or_insert(StoredDelta::from_type(type_descriptor));
+
+            let position = id_to_position(delta.scope.id);
+
+            stored_delta.before.put(delta.before.clone(), position);
+            stored_delta.after.put(delta.after.clone(), position);
+        }
+
+        self.deltas.put(&mut txn, &timestamp, &current).unwrap();
+
+        txn.commit().unwrap();
     }
 }
 
