@@ -4,6 +4,12 @@ use serde::de::{Error, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use time::{Date, OffsetDateTime, Time};
+
+pub(crate) fn date_to_timestamp(date: Date) -> i64 {
+    let offset_date = OffsetDateTime::new_utc(date, Time::MIDNIGHT);
+    offset_date.unix_timestamp()
+}
 
 pub type DataItemId = usize;
 

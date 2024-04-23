@@ -7,9 +7,9 @@ use ordered_float::OrderedFloat;
 use roaring::{MultiOps, RoaringBitmap};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
-use time::{Date, OffsetDateTime, Time};
+use time::Date;
 
-use crate::data::FieldValue;
+use crate::data::{date_to_timestamp, FieldValue};
 use crate::query::{FilterOperation, FilterResult, SortDirection};
 
 #[derive(Clone)]
@@ -292,9 +292,7 @@ impl DateIndex {
                 let date = Date::parse(string, &Iso8601::DEFAULT)
                     .unwrap_or_else(|err| panic!("Date could not be parsed: {}", err));
 
-                let offset_date = OffsetDateTime::new_utc(date, Time::MIDNIGHT);
-
-                Some(offset_date.unix_timestamp())
+                Some(date_to_timestamp(date))
             }
             _ => None,
         }
