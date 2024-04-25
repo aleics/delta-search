@@ -4,10 +4,11 @@ use pest::iterators::Pair;
 use pest::Parser;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
+use time::Date;
 
 use crate::data::{DataItem, DataItemId, FieldValue};
 use crate::index::Index;
-use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorage};
+use crate::storage::{position_to_id, EntityIndices, EntityStorage};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterOption {
@@ -23,43 +24,16 @@ impl FilterOption {
 
 #[derive(Debug)]
 struct QueryIndices {
-    stored: EntityIndices,
-    deltas: HashMap<String, Index>,
+    indices: EntityIndices,
 }
 
 impl QueryIndices {
-    fn new(stored: EntityIndices) -> Self {
-        QueryIndices {
-            stored,
-            deltas: HashMap::new(),
-        }
-    }
-
-    fn attach_deltas(mut self, deltas: &[DeltaChange]) -> Self {
-        for delta in deltas {
-            // Clone the existing index into the `deltas` related index
-            if let Some(current) = self.stored.field_indices.get(&delta.scope.field_name) {
-                if !self.deltas.contains_key(&delta.scope.field_name) {
-                    self.deltas
-                        .insert(delta.scope.field_name.to_string(), current.clone());
-                }
-            }
-
-            // Apply the change to the delta related index
-            if let Some(delta_index) = self.deltas.get_mut(&delta.scope.field_name) {
-                let position = id_to_position(delta.scope.id);
-                delta_index.remove(&delta.before, position);
-
-                delta_index.put(delta.after.clone(), position);
-            }
-        }
-        self
+    fn new(indices: EntityIndices) -> Self {
+        QueryIndices { indices }
     }
 
     fn get(&self, name: &String) -> Option<&Index> {
-        self.deltas
-            .get(name)
-            .or_else(|| self.stored.field_indices.get(name))
+        self.indices.field_indices.get(name)
     }
 
     fn execute_filter(&self, filter: &CompositeFilter) -> FilterResult {
@@ -86,7 +60,7 @@ impl QueryIndices {
             }
             CompositeFilter::Not(filter) => {
                 let result = self.execute_filter(filter);
-                FilterResult::new(&self.stored.all - result.hits)
+                FilterResult::new(&self.indices.all - result.hits)
             }
             CompositeFilter::Single(filter) => {
                 let index = self.get(&filter.name).unwrap_or_else(|| {
@@ -109,14 +83,8 @@ impl QueryIndices {
     fn compute_filter_options(&self, hits: RoaringBitmap) -> Vec<FilterOption> {
         let mut filter_options = Vec::new();
 
-        for (field, index) in &self.deltas {
+        for (field, index) in &self.indices.field_indices {
             filter_options.push(FilterOption::new(field.to_string(), index.counts(&hits)));
-        }
-
-        for (field, index) in &self.stored.field_indices {
-            if !self.deltas.contains_key(field) {
-                filter_options.push(FilterOption::new(field.to_string(), index.counts(&hits)))
-            }
         }
 
         filter_options
@@ -126,7 +94,7 @@ impl QueryIndices {
 #[derive(Default)]
 pub struct OptionsQueryExecution {
     filter: Option<CompositeFilter>,
-    deltas: Vec<DeltaChange>,
+    date: Option<Date>,
     ref_fields: Option<Vec<String>>,
 }
 
@@ -144,26 +112,28 @@ impl OptionsQueryExecution {
         self
     }
 
-    pub fn with_deltas(mut self, deltas: Vec<DeltaChange>) -> Self {
-        self.deltas.extend(deltas);
+    pub fn with_date(mut self, date: Date) -> Self {
+        self.date = Some(date);
         self
     }
 
     pub fn run(self, storage: &EntityStorage) -> Vec<FilterOption> {
         // Read the indices from storage. In case no fields are referenced, use all indices
         // as filter options.
-        let indices = match self.ref_fields {
-            Some(fields) => storage.read_indices(fields.as_slice()),
-            None => storage.read_all_indices(),
+        let indices = match (self.ref_fields, self.date) {
+            (Some(fields), Some(date)) => storage.read_indices_in(date, fields.as_slice()),
+            (Some(fields), None) => storage.read_current_indices(fields.as_slice()),
+            (None, Some(date)) => storage.read_all_indices_in(date),
+            (None, None) => storage.read_all_current_indices(),
         };
 
-        let indices = QueryIndices::new(indices).attach_deltas(&self.deltas);
+        let indices = QueryIndices::new(indices);
 
         let filter_result = self
             .filter
             .as_ref()
             .map(|filter| indices.execute_filter(filter))
-            .unwrap_or_else(|| FilterResult::new(indices.stored.all.clone()));
+            .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
 
         indices.compute_filter_options(filter_result.hits)
     }
@@ -172,8 +142,8 @@ impl OptionsQueryExecution {
 #[derive(Default)]
 pub struct QueryExecution {
     filter: Option<CompositeFilter>,
-    deltas: Vec<DeltaChange>,
     sort: Option<Sort>,
+    date: Option<Date>,
     pagination: Option<Pagination>,
     ref_fields: Vec<String>,
 }
@@ -189,11 +159,6 @@ impl QueryExecution {
         self
     }
 
-    pub fn with_deltas(mut self, deltas: Vec<DeltaChange>) -> Self {
-        self.deltas.extend(deltas);
-        self
-    }
-
     pub fn with_sort(mut self, sort: Sort) -> Self {
         self.ref_fields.append(&mut sort.get_referenced_fields());
         self.sort = Some(sort);
@@ -205,15 +170,24 @@ impl QueryExecution {
         self
     }
 
+    pub fn with_date(mut self, date: Date) -> Self {
+        self.date = Some(date);
+        self
+    }
+
     pub fn run(self, storage: &EntityStorage) -> Vec<DataItem> {
-        let indices =
-            QueryIndices::new(storage.read_indices(&self.ref_fields)).attach_deltas(&self.deltas);
+        let indices = match self.date {
+            Some(date) => storage.read_indices_in(date, &self.ref_fields),
+            None => storage.read_current_indices(&self.ref_fields),
+        };
+
+        let indices = QueryIndices::new(indices);
 
         let filter_result = self
             .filter
             .as_ref()
             .map(|filter| indices.execute_filter(filter))
-            .unwrap_or_else(|| FilterResult::new(indices.stored.all.clone()));
+            .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
 
         let item_ids = self.sort(filter_result, &indices);
 
@@ -236,26 +210,14 @@ impl QueryExecution {
     fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage) -> Vec<DataItem> {
         let mut data = Vec::new();
 
-        let deltas_by_id: HashMap<DataItemId, Vec<&DeltaChange>> =
-            self.deltas.iter().fold(HashMap::new(), |mut acc, delta| {
-                let key = delta.scope.id;
-                acc.entry(key).or_default().push(delta);
-                acc
-            });
-
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            let Some(mut item) = storage.read_by_id(id) else {
+            let Some(item) = storage.read_by_id(id) else {
                 continue;
             };
 
-            if let Some(deltas) = deltas_by_id.get(id) {
-                for delta in deltas {
-                    item.fields
-                        .insert(delta.scope.field_name.clone(), delta.after.clone());
-                }
-            }
+            // TODO: read data from storage after delta is applied
 
             data.push(item);
         }

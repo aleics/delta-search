@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::Bound;
 use std::path::Path;
 
 use heed::byteorder::BE;
@@ -401,35 +402,28 @@ impl EntityStorage {
             .unwrap_or_else(|_| panic!("Could not read index with \"{}\" from the DB", field))
     }
 
-    /// Read indices for a given set of fields. In case a field is not found, it won't be present
-    /// in the returned `EntityIndices`.
-    pub fn read_indices(&self, fields: &[String]) -> EntityIndices {
-        let txn = self.env.read_txn().unwrap();
-
+    fn read_indices(&self, txn: &RoTxn, fields: &[String]) -> EntityIndices {
         let field_indices = fields
             .iter()
             .filter_map(|name| {
-                self.read_index(&txn, name)
+                self.read_index(txn, name)
                     .map(|index| (name.to_string(), index))
             })
             .collect();
 
         let all = self
             .documents
-            .get(&txn, ALL_ITEMS_KEY)
+            .get(txn, ALL_ITEMS_KEY)
             .unwrap()
             .unwrap_or_default();
 
         EntityIndices { field_indices, all }
     }
 
-    /// Read all the indices present in the storage.
-    pub fn read_all_indices(&self) -> EntityIndices {
-        let txn = self.env.read_txn().unwrap();
-
+    fn read_all_indices(&self, txn: &RoTxn) -> EntityIndices {
         let field_indices = self
             .indices
-            .iter(&txn)
+            .iter(txn)
             .expect("Could not iterate indices from the DB.")
             .map(|item| {
                 item.map(|(key, value)| (key.to_string(), value))
@@ -439,11 +433,58 @@ impl EntityStorage {
 
         let all = self
             .documents
-            .get(&txn, ALL_ITEMS_KEY)
+            .get(txn, ALL_ITEMS_KEY)
             .expect("Could not read ALL items index from DB.")
             .unwrap_or_default();
 
         EntityIndices { field_indices, all }
+    }
+
+    fn apply_deltas(&self, txn: &RoTxn, date: Date, existing: &mut EntityIndices) {
+        let timestamp = I64::<BE>::new(date_to_timestamp(date));
+        let deltas_by_date = self
+            .deltas
+            .range(&txn, &(Bound::Unbounded, Bound::Included(timestamp)))
+            .expect("Could not read deltas using a range.");
+
+        for entry in deltas_by_date {
+            let (_, stored_deltas) = entry.expect("Could not read delta entry while iterating");
+            for (field_name, stored_delta) in &stored_deltas {
+                if let Some(index) = existing.field_indices.get_mut(field_name) {
+                    index.minus(&stored_delta.before);
+                    index.plus(&stored_delta.after);
+                }
+            }
+        }
+    }
+
+    pub fn read_indices_in(&self, date: Date, fields: &[String]) -> EntityIndices {
+        let txn = self.env.read_txn().unwrap();
+        let mut indices = self.read_indices(&txn, fields);
+        self.apply_deltas(&txn, date, &mut indices);
+
+        indices
+    }
+
+    pub fn read_all_indices_in(&self, date: Date) -> EntityIndices {
+        let txn = self.env.read_txn().unwrap();
+        let mut indices = self.read_all_indices(&txn);
+        self.apply_deltas(&txn, date, &mut indices);
+
+        indices
+    }
+
+    /// Read indices for a given set of fields. In case a field is not found, it won't be present
+    /// in the returned `EntityIndices`.
+    pub fn read_current_indices(&self, fields: &[String]) -> EntityIndices {
+        let txn = self.env.read_txn().unwrap();
+        self.read_indices(&txn, fields)
+    }
+
+    /// Read all the indices present in the storage.
+    pub fn read_all_current_indices(&self) -> EntityIndices {
+        let txn = self.env.read_txn().unwrap();
+        self.read_all_indices(&txn)
     }
 
     /// Read a data item from the storage using its identifier.

@@ -7,6 +7,7 @@ use delta_search::query::{
     CompositeFilter, OptionsQueryExecution, QueryExecution, Sort, SortDirection,
 };
 use delta_search::Engine;
+use time::{Date, Month};
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +21,7 @@ async fn main() {
 
     let michael_jordan_id = michael_jordan.id;
     let lionel_messi_id = lionel_messi.id;
+    let david_id = david.id;
 
     let name = "players_example_simple";
 
@@ -34,7 +36,7 @@ async fn main() {
         ],
     );
 
-    let mut engine = Engine::with_entities(vec![entity]);
+    let engine = Engine::with_entities(vec![entity]);
 
     let filter_options = engine.options(name, OptionsQueryExecution::new()).await;
 
@@ -70,24 +72,26 @@ async fn main() {
         SwitchSportsDelta::create(lionel_messi_id, Sport::Football, Sport::Basketball),
     ];
 
+    let date = Date::from_calendar_date(2023, Month::January, 1).unwrap();
+
+    engine.store_deltas(name, date, &switch_sports).await;
+
     let query = QueryExecution::new()
         .with_filter(CompositeFilter::eq(
             "sport",
             FieldValue::String(Sport::Basketball.as_string()),
         ))
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_deltas(switch_sports);
+        .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
 
     let players = engine.query(name, query).await;
 
     println!(
-        "Basketball players sorted by score after switching sports: {:?}",
+        "Basketball players sorted by score after switching sports in 2023: {:?}",
         players
     );
 
-    engine.remove(name, &4).await;
-
-    println!("Basketball players sorted by score: {:?}", players);
+    engine.remove(name, &david_id).await;
 
     let players = engine
         .query(

@@ -4,10 +4,12 @@
 use std::collections::HashMap;
 use std::slice;
 use std::sync::Arc;
+use time::Date;
+
 use tokio::sync::RwLock;
 
 use crate::data::{DataItem, DataItemId};
-use crate::query::{FilterOption, OptionsQueryExecution, QueryExecution};
+use crate::query::{DeltaChange, FilterOption, OptionsQueryExecution, QueryExecution};
 use crate::storage::{CreateFieldIndex, EntityStorage, StorageBuilder};
 
 pub mod data;
@@ -88,6 +90,13 @@ impl Engine {
         }
     }
 
+    pub async fn store_deltas(&self, name: &str, date: Date, deltas: &[DeltaChange]) {
+        if let Some(entry) = self.entities.get(name) {
+            let mut entity = entry.write().await;
+            entity.add_deltas(date, deltas);
+        }
+    }
+
     pub async fn clear(&self, name: &str) {
         if let Some(entry) = self.entities.get(name) {
             let mut entity = entry.write().await;
@@ -108,6 +117,7 @@ mod tests {
     use std::collections::HashMap;
 
     use lazy_static::lazy_static;
+    use time::{Date, Month};
 
     use crate::data::{DataItem, FieldValue};
     use crate::fixtures::{
@@ -121,14 +131,12 @@ mod tests {
 
     lazy_static! {
         static ref STORAGES: TestRunners = TestRunners::start(24);
-    }
-
-    lazy_static! {
         static ref MICHAEL_JORDAN: DataItem = michael_jordan();
         static ref LIONEL_MESSI: DataItem = lionel_messi();
         static ref CRISTIANO_RONALDO: DataItem = cristiano_ronaldo();
         static ref ROGER: DataItem = roger();
         static ref DAVID: DataItem = david();
+        static ref DATE: Date = Date::from_calendar_date(2024, Month::January, 1).unwrap();
     }
 
     #[tokio::test]
@@ -430,22 +438,24 @@ mod tests {
             ])
             .await;
 
-        let deltas = vec![
-            DecreaseScoreDelta::create(0, 10.0),
-            DecreaseScoreDelta::create(1, 9.0),
-        ];
-        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
-
-        // when
-        let mut matches = runner
+        runner
             .engine
-            .query(
+            .store_deltas(
                 &runner.name,
-                QueryExecution::new()
-                    .with_filter(filter)
-                    .with_deltas(deltas),
+                Date::from_calendar_date(2023, Month::January, 1).unwrap(),
+                &[
+                    DecreaseScoreDelta::create(0, 10.0),
+                    DecreaseScoreDelta::create(1, 9.0),
+                ],
             )
             .await;
+
+        // when
+        let execution = QueryExecution::new()
+            .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
+            .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
+
+        let mut matches = runner.engine.query(&runner.name, execution).await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -478,23 +488,25 @@ mod tests {
             ])
             .await;
 
-        let deltas = vec![SwitchSportsDelta::create(
-            0,
-            Sport::Basketball,
-            Sport::Football,
-        )];
-        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
-
-        // when
-        let mut matches = runner
+        runner
             .engine
-            .query(
+            .store_deltas(
                 &runner.name,
-                QueryExecution::new()
-                    .with_filter(filter)
-                    .with_deltas(deltas),
+                Date::from_calendar_date(2023, Month::January, 1).unwrap(),
+                &[SwitchSportsDelta::create(
+                    0,
+                    Sport::Basketball,
+                    Sport::Football,
+                )],
             )
             .await;
+
+        // when
+        let execution = QueryExecution::new()
+            .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
+            .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
+
+        let mut matches = runner.engine.query(&runner.name, execution).await;
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
