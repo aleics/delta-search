@@ -55,7 +55,7 @@ trait FilterableIndex {
     ) -> Option<RoaringBitmap>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Index {
     String(StringIndex),
     Numeric(NumericIndex),
@@ -120,6 +120,28 @@ impl Index {
         }
     }
 
+    pub(crate) fn plus(&mut self, index: &Index) {
+        match (self, index) {
+            (Index::String(left), Index::String(right)) => left.plus(right),
+            (Index::Numeric(left), Index::Numeric(right)) => left.plus(right),
+            (Index::Date(left), Index::Date(right)) => left.plus(right),
+            (Index::Enum(left), Index::Enum(right)) => left.plus(right),
+            (Index::Bool(left), Index::Bool(right)) => left.plus(right),
+            _ => panic!("Could not apply a plus operation for indices of different types"),
+        }
+    }
+
+    pub(crate) fn minus(&mut self, index: &Index) {
+        match (self, index) {
+            (Index::String(left), Index::String(right)) => left.minus(right),
+            (Index::Numeric(left), Index::Numeric(right)) => left.minus(right),
+            (Index::Date(left), Index::Date(right)) => left.minus(right),
+            (Index::Enum(left), Index::Enum(right)) => left.minus(right),
+            (Index::Bool(left), Index::Bool(right)) => left.minus(right),
+            _ => panic!("Could not apply a minus operation for indices of different types"),
+        }
+    }
+
     pub(crate) fn remove(&mut self, value: &FieldValue, position: u32) {
         match self {
             Index::String(index) => index.remove(value, position),
@@ -151,7 +173,7 @@ impl Index {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StringIndex {
     inner: SortableIndex<String>,
 }
@@ -159,6 +181,12 @@ pub(crate) struct StringIndex {
 impl StringIndex {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn from_pairs<const N: usize>(arr: [(String, RoaringBitmap); N]) -> Self {
+        StringIndex {
+            inner: SortableIndex::from_pairs(arr),
+        }
     }
 
     fn put(&mut self, value: FieldValue, position: u32) {
@@ -175,6 +203,14 @@ impl StringIndex {
             .expect("String index only allows to remove string values.");
 
         self.inner.remove(value, position);
+    }
+
+    fn plus(&mut self, other: &StringIndex) {
+        self.inner.plus(&other.inner)
+    }
+
+    fn minus(&mut self, other: &StringIndex) {
+        self.inner.minus(&other.inner)
     }
 
     fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
@@ -200,7 +236,7 @@ impl FilterableIndex for StringIndex {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NumericIndex {
     inner: SortableIndex<OrderedFloat<f64>>,
 }
@@ -208,6 +244,12 @@ pub(crate) struct NumericIndex {
 impl NumericIndex {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn from_pairs<const N: usize>(arr: [(OrderedFloat<f64>, RoaringBitmap); N]) -> Self {
+        NumericIndex {
+            inner: SortableIndex::from_pairs(arr),
+        }
     }
 
     fn put(&mut self, value: FieldValue, position: u32) {
@@ -226,6 +268,14 @@ impl NumericIndex {
             .expect("Numeric index only allows to remove numeric values.");
 
         self.inner.remove(value, position);
+    }
+
+    fn plus(&mut self, other: &NumericIndex) {
+        self.inner.plus(&other.inner)
+    }
+
+    fn minus(&mut self, other: &NumericIndex) {
+        self.inner.minus(&other.inner)
     }
 
     fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
@@ -276,7 +326,7 @@ impl FilterableIndex for NumericIndex {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct DateIndex {
     inner: SortableIndex<i64>,
 }
@@ -284,6 +334,12 @@ pub(crate) struct DateIndex {
 impl DateIndex {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn from_pairs<const N: usize>(arr: [(i64, RoaringBitmap); N]) -> Self {
+        DateIndex {
+            inner: SortableIndex::from_pairs(arr),
+        }
     }
 
     fn parse_value(value: &FieldValue) -> Option<i64> {
@@ -310,6 +366,14 @@ impl DateIndex {
             DateIndex::parse_value(value).expect("Date index only allows to remove date values.");
 
         self.inner.remove(&value, position);
+    }
+
+    fn plus(&mut self, other: &DateIndex) {
+        self.inner.plus(&other.inner)
+    }
+
+    fn minus(&mut self, other: &DateIndex) {
+        self.inner.minus(&other.inner)
     }
 }
 
@@ -349,7 +413,7 @@ impl FilterableIndex for DateIndex {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EnumIndex {
     values: IndexSet<String>,
     inner: SortableIndex<usize>,
@@ -360,6 +424,16 @@ impl EnumIndex {
         EnumIndex {
             values,
             inner: SortableIndex::default(),
+        }
+    }
+
+    fn from_pairs<const N: usize>(
+        values: IndexSet<String>,
+        arr: [(usize, RoaringBitmap); N],
+    ) -> Self {
+        EnumIndex {
+            values,
+            inner: SortableIndex::from_pairs(arr),
         }
     }
 
@@ -387,6 +461,14 @@ impl EnumIndex {
             .expect("Enum index does not know value to be removed.");
 
         self.inner.remove(&index, position);
+    }
+
+    fn plus(&mut self, other: &EnumIndex) {
+        self.inner.plus(&other.inner)
+    }
+
+    fn minus(&mut self, other: &EnumIndex) {
+        self.inner.minus(&other.inner)
     }
 
     fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
@@ -417,7 +499,7 @@ impl FilterableIndex for EnumIndex {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BoolIndex {
     inner: SortableIndex<bool>,
 }
@@ -426,6 +508,12 @@ impl BoolIndex {
     fn new() -> Self {
         BoolIndex {
             inner: SortableIndex::default(),
+        }
+    }
+
+    fn from_pairs<const N: usize>(arr: [(bool, RoaringBitmap); N]) -> Self {
+        BoolIndex {
+            inner: SortableIndex::from_pairs(arr),
         }
     }
 
@@ -443,6 +531,14 @@ impl BoolIndex {
             .expect("Bool index only allows to remove bool values.");
 
         self.inner.remove(value, position);
+    }
+
+    fn plus(&mut self, other: &BoolIndex) {
+        self.inner.plus(&other.inner)
+    }
+
+    fn minus(&mut self, other: &BoolIndex) {
+        self.inner.minus(&other.inner)
     }
 
     fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
@@ -471,7 +567,11 @@ impl FilterableIndex for BoolIndex {
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SortableIndex<T: Ord>(BTreeMap<T, RoaringBitmap>);
 
-impl<T: Ord> SortableIndex<T> {
+impl<T: Ord + Clone> SortableIndex<T> {
+    fn from_pairs<const N: usize>(arr: [(T, RoaringBitmap); N]) -> Self {
+        SortableIndex(BTreeMap::from(arr))
+    }
+
     /// Sort the provided `items` by a certain direction
     fn sort(&self, items: &RoaringBitmap, direction: &SortDirection) -> Vec<u32> {
         match direction {
@@ -532,9 +632,86 @@ impl<T: Ord> SortableIndex<T> {
         }
     }
 
+    fn plus(&mut self, other: &SortableIndex<T>) {
+        for (key, right) in &other.0 {
+            if let Some(left) = self.0.get_mut(key) {
+                *left |= right;
+            } else {
+                self.0.insert(key.clone(), right.clone());
+            }
+        }
+    }
+
+    fn minus(&mut self, other: &SortableIndex<T>) {
+        for (key, right) in &other.0 {
+            if let Some(left) = self.0.get_mut(key) {
+                *left -= right;
+            }
+        }
+    }
+
     fn remove_item(&mut self, position: u32) {
         for bitmap in self.0.values_mut() {
             bitmap.remove(position);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::index::{Index, NumericIndex};
+    use roaring::RoaringBitmap;
+
+    #[test]
+    fn index_plus() {
+        // given
+        let mut left = Index::Numeric(NumericIndex::from_pairs([
+            (1.0.into(), RoaringBitmap::from([0])),
+            (2.0.into(), RoaringBitmap::from([1])),
+        ]));
+
+        let right = Index::Numeric(NumericIndex::from_pairs([
+            (1.0.into(), RoaringBitmap::from([1])),
+            (3.0.into(), RoaringBitmap::from([2])),
+        ]));
+
+        // when
+        left.plus(&right);
+
+        // then
+        assert_eq!(
+            left,
+            Index::Numeric(NumericIndex::from_pairs([
+                (1.0.into(), RoaringBitmap::from([0, 1])),
+                (2.0.into(), RoaringBitmap::from([1])),
+                (3.0.into(), RoaringBitmap::from([2]))
+            ]))
+        );
+    }
+
+    #[test]
+    fn index_minus() {
+        // given
+        let mut left = Index::Numeric(NumericIndex::from_pairs([
+            (1.0.into(), RoaringBitmap::from([0])),
+            (2.0.into(), RoaringBitmap::from([1])),
+        ]));
+
+        let right = Index::Numeric(NumericIndex::from_pairs([(
+            1.0.into(),
+            RoaringBitmap::from([0, 1]),
+        )]));
+
+        // when
+        left.minus(&right);
+
+        // then
+        assert_eq!(
+            left,
+            Index::Numeric(NumericIndex::from_pairs([
+                (1.0.into(), RoaringBitmap::from([])),
+                (2.0.into(), RoaringBitmap::from([1])),
+            ]))
+        );
     }
 }
