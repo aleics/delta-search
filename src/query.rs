@@ -447,7 +447,8 @@ pub struct FilterParser;
 
 impl FilterParser {
     pub fn parse_query(input: &str) -> Result<CompositeFilter, ParseError> {
-        let mut pairs = Self::parse(Rule::composite, input)?;
+        let mut pairs = Self::parse(Rule::composite, input)
+            .map_err(|err| ParseError::QueryParse(err.line().to_string()))?;
         let query_pair = pairs.next().ok_or(ParseError::EmptyQuery)?;
         Self::parse_statement(query_pair)
     }
@@ -585,8 +586,8 @@ pub enum ParseError {
     EmptyQuery,
     #[error("invalid query \"{0}\"")]
     InvalidQuery(&'static str),
-    #[error(transparent)]
-    QueryParse(#[from] pest::error::Error<Rule>),
+    #[error("query could not be parsed for line \"{0}\"")]
+    QueryParse(String),
     #[error("query contains unknown operator")]
     UnknownOperator,
 }
