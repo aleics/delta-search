@@ -47,7 +47,7 @@ pub(crate) struct TestPlayerRunner {
 impl TestPlayerRunner {
     fn start(index: usize) -> Self {
         let name = format!("test_players_{}", index);
-        let storage = StorageBuilder::new(&name).build();
+        let storage = StorageBuilder::new(&name).build().unwrap();
         let path = storage.get_path().as_os_str().to_str().unwrap().to_string();
 
         TestPlayerRunner {
@@ -121,40 +121,42 @@ pub fn create_player_from_index(index: usize) -> DataItem {
 }
 
 pub fn create_players_storage(name: &str, data: Vec<DataItem>) -> EntityStorage {
-    let mut storage = StorageBuilder::new(name).build();
+    let mut storage = StorageBuilder::new(name).build().unwrap();
     carry_players(data, &mut storage);
 
     storage
 }
 
 fn carry_players(items: Vec<DataItem>, storage: &mut EntityStorage) {
-    storage.carry(items);
+    storage.carry(items).unwrap();
 
-    storage.create_indices(vec![
-        CreateFieldIndex {
-            name: "name".to_string(),
-            descriptor: TypeDescriptor::String,
-        },
-        CreateFieldIndex {
-            name: "sport".to_string(),
-            descriptor: TypeDescriptor::Enum(HashSet::from_iter([
-                Sport::Basketball.as_string(),
-                Sport::Football.as_string(),
-            ])),
-        },
-        CreateFieldIndex {
-            name: "birth_date".to_string(),
-            descriptor: TypeDescriptor::Date,
-        },
-        CreateFieldIndex {
-            name: "score".to_string(),
-            descriptor: TypeDescriptor::Numeric,
-        },
-        CreateFieldIndex {
-            name: "active".to_string(),
-            descriptor: TypeDescriptor::Bool,
-        },
-    ]);
+    storage
+        .create_indices(vec![
+            CreateFieldIndex {
+                name: "name".to_string(),
+                descriptor: TypeDescriptor::String,
+            },
+            CreateFieldIndex {
+                name: "sport".to_string(),
+                descriptor: TypeDescriptor::Enum(HashSet::from_iter([
+                    Sport::Basketball.as_string(),
+                    Sport::Football.as_string(),
+                ])),
+            },
+            CreateFieldIndex {
+                name: "birth_date".to_string(),
+                descriptor: TypeDescriptor::Date,
+            },
+            CreateFieldIndex {
+                name: "score".to_string(),
+                descriptor: TypeDescriptor::Numeric,
+            },
+            CreateFieldIndex {
+                name: "active".to_string(),
+                descriptor: TypeDescriptor::Bool,
+            },
+        ])
+        .unwrap();
 }
 
 pub fn decrease_score_deltas(data: &[DataItem], size: usize) -> Vec<DeltaChange> {

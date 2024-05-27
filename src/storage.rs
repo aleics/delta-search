@@ -7,6 +7,7 @@ use heed::types::*;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use time::Date;
 
 use crate::data::{date_to_timestamp, DataItem};
@@ -66,11 +67,8 @@ impl StorageBuilder {
         }
     }
 
-    pub fn build(&self) -> EntityStorage {
-        let name = self
-            .name
-            .as_ref()
-            .expect("You must specify a name for your entity to be stored in disk.");
+    pub fn build(&self) -> Result<EntityStorage, StorageError> {
+        let name = self.name.as_ref().ok_or_else(|| StorageError::NoName)?;
 
         EntityStorage::init(name)
     }
@@ -78,6 +76,7 @@ impl StorageBuilder {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoredDelta {
+    affected: RoaringBitmap,
     before: Index,
     after: Index,
 }
@@ -85,6 +84,7 @@ pub struct StoredDelta {
 impl StoredDelta {
     fn from_type(descriptor: &TypeDescriptor) -> Self {
         StoredDelta {
+            affected: RoaringBitmap::new(),
             before: Index::from_type(descriptor),
             after: Index::from_type(descriptor),
         }
@@ -105,49 +105,32 @@ pub struct EntityStorage {
 impl EntityStorage {
     /// Initialises a new `DiskStorage` instance by creating the necessary files
     /// and LMDB `Database` entries.
-    pub fn init(name: &str) -> Self {
+    pub fn init(name: &str) -> Result<Self, StorageError> {
         let file_name = format!("{}.mdb", name);
         let path = Path::new(DB_FOLDER).join(file_name);
 
-        std::fs::create_dir_all(&path).unwrap();
+        std::fs::create_dir_all(&path)?;
 
         let env = EnvOpenOptions::new()
             .map_size(100 * 1024 * 1024) // 100 MB max size
             .max_dbs(3000)
-            .open(path)
-            .unwrap();
+            .open(path)?;
 
-        let data = env.create_database(Some(DATA_DB_NAME)).unwrap_or_else(|_| {
-            panic!(
-                "Could not create database for storing data in entity {}",
-                name
-            )
-        });
+        let data = env
+            .create_database(Some(DATA_DB_NAME))
+            .map_err(|_| StorageError::CreateDatabase(DATA_DB_NAME))?;
+
         let indices = env
             .create_database(Some(INDICES_DB_NAME))
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not create database for storing indices in entity {}",
-                    name
-                )
-            });
+            .map_err(|_| StorageError::CreateDatabase(INDICES_DB_NAME))?;
+
         let documents = env
             .create_database(Some(DOCUMENTS_DB_NAME))
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not create database for storing documents in entity {}",
-                    name
-                )
-            });
+            .map_err(|_| StorageError::CreateDatabase(DOCUMENTS_DB_NAME))?;
 
         let deltas = env
             .create_database(Some(DELTAS_DB_NAME))
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Could not create database for storing deltas in entity {}",
-                    name
-                )
-            });
+            .map_err(|_| StorageError::CreateDatabase(DELTAS_DB_NAME))?;
 
         let mut storage = EntityStorage {
             id: name.to_string(),
@@ -159,26 +142,25 @@ impl EntityStorage {
             index_descriptors: HashMap::new(),
         };
 
-        storage.propagate_indices();
+        storage.propagate_indices()?;
 
-        storage
+        Ok(storage)
     }
 
     /// Propagate the index data into other in-memory data used for faster access to certain
     /// properties and reduce deserialization overhead while running certain operations.
-    fn propagate_indices(&mut self) {
+    fn propagate_indices(&mut self) -> Result<(), StorageError> {
         let txn = self.env.read_txn().unwrap();
 
-        let entries = self
-            .indices
-            .iter(&txn)
-            .expect("Could not read indices while creating cache")
-            .map(|entry| entry.expect("Could not read index entry while creating cache"));
+        let entries = self.indices.iter(&txn)?;
 
-        for (name, index) in entries {
+        for entry in entries {
+            let (name, index) = entry?;
             self.index_descriptors
                 .insert(name.to_string(), index.create_descriptor());
         }
+
+        Ok(())
     }
 
     /// Get the current entity's storage path.
@@ -188,65 +170,65 @@ impl EntityStorage {
 
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
-    pub fn carry<I>(&mut self, data: I)
+    pub fn carry<I>(&mut self, data: I) -> Result<(), StorageError>
     where
         I: IntoIterator<Item = DataItem>,
     {
-        self.clear();
-        self.add_multiple(data);
+        self.clear()?;
+        self.add_multiple(data)?;
+
+        Ok(())
+    }
+
+    /// Clears the current storage indices and data.
+    pub fn clear(&mut self) -> Result<(), StorageError> {
+        let mut txn = self.env.write_txn()?;
+
+        self.data.clear(&mut txn)?;
+        self.indices.clear(&mut txn)?;
+        self.documents.clear(&mut txn)?;
+        self.index_descriptors.clear();
+
+        txn.commit()?;
+
+        Ok(())
     }
 
     /// Add multiple items using chunks so that multiple transactions are commited, depending on
     /// the amount of chunks generated.
-    fn add_multiple<I>(&self, data: I)
+    fn add_multiple<I>(&self, data: I) -> Result<(), StorageError>
     where
         I: IntoIterator<Item = DataItem>,
     {
         // Add elements in chunks to optimise the storing execution write operations in bulk.
         let mut chunks = data.into_iter().array_chunks::<100>();
         for chunk in chunks.by_ref() {
-            self.add(&chunk);
+            self.add(&chunk)?;
         }
 
         // In case there's some leftovers after splitting in chunks
         if let Some(remainder) = chunks.into_remainder() {
-            self.add(remainder.as_slice());
+            self.add(remainder.as_slice())?;
         }
-    }
 
-    /// Clears the current storage indices and data.
-    pub fn clear(&mut self) {
-        let mut txn = self.env.write_txn().unwrap();
-
-        self.data
-            .clear(&mut txn)
-            .expect("Could not clear data_items");
-        self.indices
-            .clear(&mut txn)
-            .expect("Could not clear indices");
-        self.documents
-            .clear(&mut txn)
-            .expect("Could not clear documents");
-        self.index_descriptors.clear();
-
-        txn.commit().unwrap();
+        Ok(())
     }
 
     /// Store an amount of items in the database using a single transaction.
     /// Any index is as well updated with the stored items after the transaction
     /// is committed.
-    pub fn add(&self, items: &[DataItem]) {
-        let mut txn = self.env.write_txn().unwrap();
+    pub fn add(&self, items: &[DataItem]) -> Result<(), StorageError> {
+        let mut txn = self.env.write_txn()?;
 
         let mut indices_to_store: HashMap<String, Index> = HashMap::new();
-        let mut all = self.get_all_positions(&txn).unwrap_or_default();
+        let mut all = self.documents.get(&txn, ALL_ITEMS_KEY)?.unwrap_or_default();
 
         for item in items {
             // Read item ID and determine position
             let position = id_to_position(item.id);
 
             // Insert item in the data DB
-            self.data.put(&mut txn, &item.id, item).unwrap();
+            self.data.put(&mut txn, &item.id, item)?;
 
             // Update indices in memory with the item data to reduce (de)serialization overhead
             // if we update index one by one in the DB.
@@ -260,8 +242,7 @@ impl EntityStorage {
                 } else {
                     let mut index = self
                         .indices
-                        .get(&txn, index_name)
-                        .unwrap()
+                        .get(&txn, index_name)?
                         .unwrap_or_else(|| Index::from_type(index_descriptor));
 
                     index.put(value, position);
@@ -273,13 +254,15 @@ impl EntityStorage {
         }
 
         // Store indices in the DB for each index that has been changed.
-        self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
+        self.documents.put(&mut txn, ALL_ITEMS_KEY, &all)?;
 
         for (name, index) in indices_to_store {
-            self.indices.put(&mut txn, &name, &index).unwrap();
+            self.indices.put(&mut txn, &name, &index)?;
         }
 
-        txn.commit().unwrap();
+        txn.commit()?;
+
+        Ok(())
     }
 
     /// Create new indices in the database defined by the provided commands.
@@ -289,21 +272,18 @@ impl EntityStorage {
     ///
     /// In case the name used for the new index already exists, the existing
     /// index will be overwritten by the fresh one.
-    pub fn create_indices(&mut self, commands: Vec<CreateFieldIndex>) {
-        let mut txn = self.env.write_txn().unwrap();
+    pub fn create_indices(&mut self, commands: Vec<CreateFieldIndex>) -> Result<(), StorageError> {
+        let mut txn = self.env.write_txn()?;
 
         let mut indices_to_store: HashMap<&String, Index> = HashMap::new();
 
-        let items = self
-            .data
-            .iter(&txn)
-            .expect("Could not read data to create index")
-            .map(|entry| entry.expect("Could not read entry while reading data to create index"));
+        let entries = self.data.iter(&txn)?;
 
         let mut descriptors = HashMap::new();
 
         // Iterate over each item and populate the data to the new indices
-        for (id, item) in items {
+        for entry in entries {
+            let (id, item) = entry?;
             for command in &commands {
                 let Some(value) = item.fields.get(&command.name).cloned() else {
                     continue;
@@ -317,7 +297,8 @@ impl EntityStorage {
                     // Create the new index and appended in memory, after it's populated
                     // with the item's data it will be stored.
                     let mut index = self
-                        .read_index(&txn, &command.name)
+                        .indices
+                        .get(&txn, &command.name)?
                         .unwrap_or_else(|| Index::from_type(&command.descriptor));
 
                     index.put(value, position);
@@ -335,16 +316,18 @@ impl EntityStorage {
         self.index_descriptors.extend(descriptors);
 
         txn.commit().unwrap();
+
+        Ok(())
     }
 
     /// Removes a number of items at once from the DB by their IDs.
-    pub fn remove(&self, ids: &[DataItemId]) {
-        let mut txn = self.env.write_txn().unwrap();
+    pub fn remove(&self, ids: &[DataItemId]) -> Result<(), StorageError> {
+        let mut txn = self.env.write_txn()?;
         let mut positions_to_delete = Vec::with_capacity(ids.len());
 
         for id in ids {
             // Remove item from data and ID to position mapping
-            let present = self.data.delete(&mut txn, id).unwrap();
+            let present = self.data.delete(&mut txn, id)?;
             if !present {
                 continue;
             }
@@ -354,15 +337,10 @@ impl EntityStorage {
         }
 
         // Remove positions from the indices
-        let mut entries = self
-            .indices
-            .iter_mut(&mut txn)
-            .expect("Could not iterate indices from the DB.");
+        let mut entries = self.indices.iter_mut(&mut txn)?;
 
         while let Some(entry) = entries.next() {
-            let (key, mut index) = entry
-                .map(|(key, value)| (key.to_string(), value))
-                .expect("Could not read entry while iterating indices from the DB.");
+            let (key, mut index) = entry.map(|(key, value)| (key.to_string(), value))?;
 
             for position in &positions_to_delete {
                 index.remove_item(*position);
@@ -374,23 +352,16 @@ impl EntityStorage {
         drop(entries);
 
         // Remove positions from all the items that need to be deleted.
-        if let Some(mut all) = self.get_all_positions(&txn) {
+        if let Some(mut all) = self.documents.get(&txn, ALL_ITEMS_KEY)? {
             for position in positions_to_delete {
                 all.remove(position);
             }
-            self.documents.put(&mut txn, ALL_ITEMS_KEY, &all).unwrap();
+            self.documents.put(&mut txn, ALL_ITEMS_KEY, &all)?;
         }
 
-        txn.commit().unwrap();
-    }
+        txn.commit()?;
 
-    /// Get a `RoaringBitmap` for all the data's positions in the DB.
-    ///
-    /// Use the current transaction to don't create transactions implicitly, if not needed.
-    fn get_all_positions(&self, txn: &RoTxn) -> Option<RoaringBitmap> {
-        self.documents
-            .get(txn, ALL_ITEMS_KEY)
-            .expect("Could not read all items from the DB.")
+        Ok(())
     }
 
     /// Read an index from the DB by its field name.
@@ -402,87 +373,135 @@ impl EntityStorage {
             .unwrap_or_else(|_| panic!("Could not read index with \"{}\" from the DB", field))
     }
 
-    fn read_indices(&self, txn: &RoTxn, fields: &[String]) -> EntityIndices {
+    fn read_indices(&self, txn: &RoTxn, fields: &[String]) -> Result<EntityIndices, StorageError> {
         let field_indices = fields
             .iter()
             .filter_map(|name| {
-                self.read_index(txn, name)
+                self.indices
+                    .get(txn, name)
+                    .expect("Could not read index from DB.")
                     .map(|index| (name.to_string(), index))
             })
             .collect();
 
-        let all = self
-            .documents
-            .get(txn, ALL_ITEMS_KEY)
-            .unwrap()
-            .unwrap_or_default();
+        let all = self.documents.get(txn, ALL_ITEMS_KEY)?.unwrap_or_default();
 
-        EntityIndices { field_indices, all }
+        Ok(EntityIndices {
+            field_indices,
+            all,
+            affected: AffectedData::default(),
+        })
     }
 
-    fn read_all_indices(&self, txn: &RoTxn) -> EntityIndices {
+    fn read_all_indices(&self, txn: &RoTxn) -> Result<EntityIndices, StorageError> {
         let field_indices = self
             .indices
-            .iter(txn)
-            .expect("Could not iterate indices from the DB.")
+            .iter(txn)?
             .map(|item| {
                 item.map(|(key, value)| (key.to_string(), value))
                     .expect("Could not read index from DB.")
             })
             .collect();
 
-        let all = self
-            .documents
-            .get(txn, ALL_ITEMS_KEY)
-            .expect("Could not read ALL items index from DB.")
-            .unwrap_or_default();
+        let all = self.documents.get(txn, ALL_ITEMS_KEY)?.unwrap_or_default();
 
-        EntityIndices { field_indices, all }
+        Ok(EntityIndices {
+            field_indices,
+            all,
+            affected: AffectedData::default(),
+        })
     }
 
-    fn apply_deltas(&self, txn: &RoTxn, date: Date, existing: &mut EntityIndices) {
+    fn read_deltas(
+        &self,
+        txn: &RoTxn,
+        date: Date,
+    ) -> Result<HashMap<String, StoredDelta>, StorageError> {
         let timestamp = I64::<BE>::new(date_to_timestamp(date));
+
         let deltas_by_date = self
             .deltas
-            .range(&txn, &(Bound::Unbounded, Bound::Included(timestamp)))
-            .expect("Could not read deltas using a range.");
+            .range(txn, &(Bound::Unbounded, Bound::Included(timestamp)))?;
+
+        let mut aggregated_deltas: HashMap<String, StoredDelta> = HashMap::new();
 
         for entry in deltas_by_date {
-            let (_, stored_deltas) = entry.expect("Could not read delta entry while iterating");
-            for (field_name, stored_delta) in &stored_deltas {
-                if let Some(index) = existing.field_indices.get_mut(field_name) {
-                    index.minus(&stored_delta.before);
-                    index.plus(&stored_delta.after);
+            let (_, stored_deltas) = entry?;
+            for (field, stored_delta) in stored_deltas {
+                if let Some(aggregated_delta) = aggregated_deltas.get_mut(&field) {
+                    aggregated_delta.before.plus(&stored_delta.before);
+                    aggregated_delta.after.plus(&stored_delta.after);
+                    aggregated_delta.affected |= &stored_delta.affected;
+                } else {
+                    aggregated_deltas.insert(field, stored_delta);
                 }
             }
         }
+
+        Ok(aggregated_deltas)
     }
 
-    pub fn read_indices_in(&self, date: Date, fields: &[String]) -> EntityIndices {
-        let txn = self.env.read_txn().unwrap();
-        let mut indices = self.read_indices(&txn, fields);
-        self.apply_deltas(&txn, date, &mut indices);
+    fn apply_deltas(
+        deltas: HashMap<String, StoredDelta>,
+        existing: &mut EntityIndices,
+    ) -> AffectedData {
+        let mut affected = AffectedData::default();
 
-        indices
+        for (field_name, stored_delta) in &deltas {
+            if let Some(index) = existing.field_indices.get_mut(field_name) {
+                index.minus(&stored_delta.before);
+                index.plus(&stored_delta.after);
+
+                affected.items |= &stored_delta.affected;
+                affected.fields.push(field_name.clone());
+            }
+        }
+
+        affected
     }
 
-    pub fn read_all_indices_in(&self, date: Date) -> EntityIndices {
+    pub fn read_indices_in(
+        &self,
+        date: Date,
+        fields: &[String],
+    ) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
-        let mut indices = self.read_all_indices(&txn);
-        self.apply_deltas(&txn, date, &mut indices);
 
-        indices
+        let deltas = self.read_deltas(&txn, date)?;
+
+        let mut indices = if deltas.is_empty() {
+            self.read_indices(&txn, fields)?
+        } else {
+            let mut fields = fields.to_vec();
+            fields.extend(deltas.keys().cloned());
+            self.read_indices(&txn, &fields)?
+        };
+
+        let affected = EntityStorage::apply_deltas(deltas, &mut indices);
+
+        Ok(indices.with_affected(affected))
+    }
+
+    pub fn read_all_indices_in(&self, date: Date) -> Result<EntityIndices, StorageError> {
+        let txn = self.env.read_txn().unwrap();
+
+        let deltas = self.read_deltas(&txn, date)?;
+        let mut indices = self.read_all_indices(&txn)?;
+
+        let affected = EntityStorage::apply_deltas(deltas, &mut indices);
+
+        Ok(indices.with_affected(affected))
     }
 
     /// Read indices for a given set of fields. In case a field is not found, it won't be present
     /// in the returned `EntityIndices`.
-    pub fn read_current_indices(&self, fields: &[String]) -> EntityIndices {
+    pub fn read_current_indices(&self, fields: &[String]) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
         self.read_indices(&txn, fields)
     }
 
     /// Read all the indices present in the storage.
-    pub fn read_all_current_indices(&self) -> EntityIndices {
+    pub fn read_all_current_indices(&self) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
         self.read_all_indices(&txn)
     }
@@ -496,16 +515,16 @@ impl EntityStorage {
             .expect("Could not read item from DB")
     }
 
-    pub(crate) fn add_deltas(&self, date: Date, deltas: &[DeltaChange]) {
+    pub(crate) fn add_deltas(
+        &self,
+        date: Date,
+        deltas: &[DeltaChange],
+    ) -> Result<(), StorageError> {
         let timestamp = I64::<BE>::new(date_to_timestamp(date));
 
-        let mut txn = self.env.write_txn().unwrap();
+        let mut txn = self.env.write_txn()?;
 
-        let mut current = self
-            .deltas
-            .get(&txn, &timestamp)
-            .expect("Could not read deltas from DB")
-            .unwrap_or_default();
+        let mut current = self.deltas.get(&txn, &timestamp)?.unwrap_or_default();
 
         // Iterate over the deltas to create for each field name the before and after index
         for delta in deltas {
@@ -527,12 +546,28 @@ impl EntityStorage {
 
             stored_delta.before.put(delta.before.clone(), position);
             stored_delta.after.put(delta.after.clone(), position);
+            stored_delta.affected.insert(position);
         }
 
-        self.deltas.put(&mut txn, &timestamp, &current).unwrap();
+        self.deltas.put(&mut txn, &timestamp, &current)?;
 
-        txn.commit().unwrap();
+        txn.commit()?;
+
+        Ok(())
     }
+}
+
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum StorageError {
+    #[error("no name has been defined for an entity storage instance")]
+    NoName,
+    #[error("there was an error creating database for key `{0}`")]
+    CreateDatabase(&'static str),
+    #[error(transparent)]
+    CreateStoragePath(#[from] std::io::Error),
+    #[error(transparent)]
+    DbOperation(#[from] heed::Error),
 }
 
 #[derive(Default, Debug)]
@@ -542,6 +577,22 @@ pub struct EntityIndices {
 
     /// Bitmap including all items' positions
     pub(crate) all: RoaringBitmap,
+
+    /// Bitmap including items' positions that are affected by
+    pub(crate) affected: AffectedData,
+}
+
+impl EntityIndices {
+    fn with_affected(mut self, affected: AffectedData) -> Self {
+        self.affected = affected;
+        self
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct AffectedData {
+    pub(crate) items: RoaringBitmap,
+    pub(crate) fields: Vec<String>,
 }
 
 pub struct CreateFieldIndex {

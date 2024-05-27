@@ -74,7 +74,10 @@ async fn main() {
 
     let date = Date::from_calendar_date(2023, Month::January, 1).unwrap();
 
-    engine.store_deltas(name, date, &switch_sports).await;
+    engine
+        .store_deltas(name, date, &switch_sports)
+        .await
+        .unwrap();
 
     let query = QueryExecution::new()
         .with_filter(CompositeFilter::eq(
@@ -91,7 +94,7 @@ async fn main() {
         players
     );
 
-    engine.remove(name, &david_id).await;
+    engine.remove(name, &david_id).await.unwrap();
 
     let players = engine
         .query(

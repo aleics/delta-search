@@ -4,11 +4,12 @@ use pest::iterators::Pair;
 use pest::Parser;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use time::Date;
 
 use crate::data::{DataItem, DataItemId, FieldValue};
 use crate::index::Index;
-use crate::storage::{position_to_id, EntityIndices, EntityStorage};
+use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorage, StorageError};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterOption {
@@ -117,7 +118,7 @@ impl OptionsQueryExecution {
         self
     }
 
-    pub fn run(self, storage: &EntityStorage) -> Vec<FilterOption> {
+    pub fn run(self, storage: &EntityStorage) -> Result<Vec<FilterOption>, QueryError> {
         // Read the indices from storage. In case no fields are referenced, use all indices
         // as filter options.
         let indices = match (self.ref_fields, self.date) {
@@ -125,7 +126,7 @@ impl OptionsQueryExecution {
             (Some(fields), None) => storage.read_current_indices(fields.as_slice()),
             (None, Some(date)) => storage.read_all_indices_in(date),
             (None, None) => storage.read_all_current_indices(),
-        };
+        }?;
 
         let indices = QueryIndices::new(indices);
 
@@ -135,7 +136,7 @@ impl OptionsQueryExecution {
             .map(|filter| indices.execute_filter(filter))
             .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
 
-        indices.compute_filter_options(filter_result.hits)
+        Ok(indices.compute_filter_options(filter_result.hits))
     }
 }
 
@@ -175,11 +176,11 @@ impl QueryExecution {
         self
     }
 
-    pub fn run(self, storage: &EntityStorage) -> Vec<DataItem> {
+    pub fn run(self, storage: &EntityStorage) -> Result<Vec<DataItem>, QueryError> {
         let indices = match self.date {
             Some(date) => storage.read_indices_in(date, &self.ref_fields),
             None => storage.read_current_indices(&self.ref_fields),
-        };
+        }?;
 
         let indices = QueryIndices::new(indices);
 
@@ -191,7 +192,7 @@ impl QueryExecution {
 
         let item_ids = self.sort(filter_result, &indices);
 
-        self.read_data(&item_ids, storage)
+        Ok(self.read_data(&item_ids, storage, &indices.indices))
     }
 
     fn sort(&self, filter_result: FilterResult, indices: &QueryIndices) -> Vec<DataItemId> {
@@ -207,17 +208,33 @@ impl QueryExecution {
         filter_result.hits.iter().map(position_to_id).collect()
     }
 
-    fn read_data(&self, ids: &[DataItemId], storage: &EntityStorage) -> Vec<DataItem> {
+    fn read_data(
+        &self,
+        ids: &[DataItemId],
+        storage: &EntityStorage,
+        indices: &EntityIndices,
+    ) -> Vec<DataItem> {
         let mut data = Vec::new();
 
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            let Some(item) = storage.read_by_id(id) else {
+            let Some(mut item) = storage.read_by_id(id) else {
                 continue;
             };
 
-            // TODO: read data from storage after delta is applied
+            let position = id_to_position(item.id);
+            if indices.affected.items.contains(position) {
+                for field in &indices.affected.fields {
+                    if let Some(value) = indices
+                        .field_indices
+                        .get(field)
+                        .and_then(|index| index.get_value(position))
+                    {
+                        item.fields.insert(field.clone(), value);
+                    }
+                }
+            }
 
             data.push(item);
         }
@@ -429,12 +446,13 @@ impl DeltaChange {
 pub struct FilterParser;
 
 impl FilterParser {
-    pub fn parse_query(input: &str) -> CompositeFilter {
-        let mut pairs = Self::parse(Rule::composite, input).unwrap();
-        Self::parse_statement(pairs.next().unwrap())
+    pub fn parse_query(input: &str) -> Result<CompositeFilter, ParseError> {
+        let mut pairs = Self::parse(Rule::composite, input)?;
+        let query_pair = pairs.next().ok_or(ParseError::EmptyQuery)?;
+        Self::parse_statement(query_pair)
     }
 
-    fn parse_statement(pair: Pair<Rule>) -> CompositeFilter {
+    fn parse_statement(pair: Pair<Rule>) -> Result<CompositeFilter, ParseError> {
         match pair.as_rule() {
             Rule::WHITESPACE
             | Rule::NAME_CHAR
@@ -451,53 +469,57 @@ impl FilterParser {
 
                 let name = inner
                     .next()
-                    .expect("Could not find name in statement rule")
+                    .ok_or(ParseError::InvalidQuery(
+                        "expected property name in filter statement",
+                    ))?
                     .as_str();
 
                 let operator = inner
                     .next()
-                    .expect("Could not find comparison_operator in statement rule")
+                    .ok_or(ParseError::InvalidQuery(
+                        "expected comparison operator in filter statement",
+                    ))?
                     .as_str();
 
-                let value = inner
-                    .next()
-                    .expect("Could not find value in statement rule");
+                let value = inner.next().ok_or(ParseError::InvalidQuery(
+                    "expected value in filter statement",
+                ))?;
 
                 let value = Self::parse_value(value);
 
                 match operator {
-                    "=" => CompositeFilter::eq(name, value),
-                    ">=" => CompositeFilter::ge(name, value),
-                    "<=" => CompositeFilter::le(name, value),
-                    ">" => CompositeFilter::gt(name, value),
-                    "<" => CompositeFilter::lt(name, value),
-                    "!=" => CompositeFilter::negate(CompositeFilter::eq(name, value)),
-                    _ => panic!("Unknown comparison operator \"{}\"", operator),
+                    "=" => Ok(CompositeFilter::eq(name, value)),
+                    ">=" => Ok(CompositeFilter::ge(name, value)),
+                    "<=" => Ok(CompositeFilter::le(name, value)),
+                    ">" => Ok(CompositeFilter::gt(name, value)),
+                    "<" => Ok(CompositeFilter::lt(name, value)),
+                    "!=" => Ok(CompositeFilter::negate(CompositeFilter::eq(name, value))),
+                    _ => Err(ParseError::UnknownOperator),
                 }
             }
             Rule::composite => {
                 let mut inner = pair.into_inner();
 
-                let left = inner
-                    .next()
-                    .expect("Could not find left statement in composite rule");
+                let left = inner.next().ok_or(ParseError::InvalidQuery(
+                    "expected left statement in composite rule",
+                ))?;
 
                 let Some(operator) = inner.next() else {
                     return Self::parse_statement(left);
                 };
 
-                let right = inner
-                    .next()
-                    .expect("Could not right left statement in composite rule");
+                let right = inner.next().ok_or(ParseError::InvalidQuery(
+                    "expected right statement in composite rule",
+                ))?;
 
-                let left = Self::parse_statement(left);
-                let right = Self::parse_statement(right);
+                let left = Self::parse_statement(left)?;
+                let right = Self::parse_statement(right)?;
 
                 let operator = operator.as_str();
                 match operator {
-                    "&&" => CompositeFilter::And(vec![left, right]),
-                    "||" => CompositeFilter::Or(vec![left, right]),
-                    _ => panic!("Unknown boolean operator \"{}\"", operator),
+                    "&&" => Ok(CompositeFilter::And(vec![left, right])),
+                    "||" => Ok(CompositeFilter::Or(vec![left, right])),
+                    _ => Err(ParseError::UnknownOperator),
                 }
             }
         }
@@ -549,6 +571,26 @@ impl FilterParser {
     }
 }
 
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum QueryError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
+
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum ParseError {
+    #[error("query is defined but empty")]
+    EmptyQuery,
+    #[error("invalid query \"{0}\"")]
+    InvalidQuery(&'static str),
+    #[error(transparent)]
+    QueryParse(#[from] pest::error::Error<Rule>),
+    #[error("query contains unknown operator")]
+    UnknownOperator,
+}
+
 #[cfg(test)]
 mod tests {
     use crate::data::FieldValue;
@@ -560,7 +602,7 @@ mod tests {
         let input = "(person.name != \"Michael Jordan\") && (score > 1 || active = true && (person.name.simple = \"Roger\" || score <= 5))";
 
         // when
-        let result = FilterParser::parse_query(input);
+        let result = FilterParser::parse_query(input).unwrap();
 
         // then
         assert_eq!(

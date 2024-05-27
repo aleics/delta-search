@@ -7,8 +7,13 @@ use std::fmt::{Display, Formatter};
 use time::{Date, OffsetDateTime, Time};
 
 pub(crate) fn date_to_timestamp(date: Date) -> i64 {
-    let offset_date = OffsetDateTime::new_utc(date, Time::MIDNIGHT);
-    offset_date.unix_timestamp()
+    OffsetDateTime::new_utc(date, Time::MIDNIGHT).unix_timestamp()
+}
+
+pub(crate) fn timestamp_to_date(timestamp: i64) -> Date {
+    OffsetDateTime::from_unix_timestamp(timestamp)
+        .expect("Could not parse timestamp as date time")
+        .date()
 }
 
 pub type DataItemId = usize;

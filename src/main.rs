@@ -1,9 +1,14 @@
 use std::sync::Arc;
 
+use anyhow::anyhow;
+use axum::body::Body;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{response::Json, Router};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
@@ -19,43 +24,60 @@ const DEFAULT_START_PAGE: usize = 0;
 const DEFAULT_PAGE_SIZE: usize = 500;
 
 #[derive(Clone)]
-struct SearchEngine {
+struct App {
     inner: Arc<RwLock<Engine>>,
 }
 
-impl SearchEngine {
-    fn init() -> SearchEngine {
-        SearchEngine {
-            inner: Arc::new(RwLock::new(Engine::init())),
-        }
+impl App {
+    fn init() -> Result<App, AppError> {
+        let engine = Engine::init().map_err(|_| anyhow!("Could not initialize engine"))?;
+
+        Ok(App {
+            inner: Arc::new(RwLock::new(engine)),
+        })
     }
 
-    async fn create_entity(&self, name: &str) {
+    async fn create_entity(&self, name: &str) -> Result<(), AppError> {
         let mut engine = self.inner.write().await;
-        engine.create_entity(name.to_string());
+        engine
+            .create_entity(name.to_string())
+            .map_err(|_| anyhow!("Could not create entity `{}`", name))?;
+
+        Ok(())
     }
 
-    async fn add_items(&self, name: &str, items: Vec<DataItemInput>) {
+    async fn add_items(&self, name: &str, items: Vec<DataItemInput>) -> Result<(), AppError> {
         let items: Vec<DataItem> = items
             .into_iter()
             .map(|input_item| DataItem::new(input_item.id, input_item.fields.inner))
             .collect();
 
         let engine = self.inner.read().await;
-        engine.add_multiple(name, items.as_slice()).await
+        engine
+            .add_multiple(name, items.as_slice())
+            .await
+            .map_err(|_| anyhow!("Could not add items for entity `{}`", name))?;
+
+        Ok(())
     }
 
-    async fn query(&self, name: &str, input: QueryIndexInput) -> Vec<DataItem> {
-        let execution = Self::build_query_execution(input);
+    async fn query(&self, name: &str, input: QueryIndexInput) -> Result<Vec<DataItem>, AppError> {
+        let execution = Self::build_query_execution(input)?;
+
         let engine = self.inner.read().await;
-        engine.query(name, execution).await
+        engine
+            .query(name, execution)
+            .await
+            .map_err(|_| anyhow!("Could not add items for entity `{}`", name).into())
     }
 
-    fn build_query_execution(input: QueryIndexInput) -> QueryExecution {
+    fn build_query_execution(input: QueryIndexInput) -> Result<QueryExecution, AppError> {
         let mut execution = QueryExecution::new();
 
         if let Some(filter) = &input.filter {
-            execution = execution.with_filter(FilterParser::parse_query(filter));
+            let parsed_filter =
+                FilterParser::parse_query(filter).map_err(|_| AppError::InvalidFilterQuery)?;
+            execution = execution.with_filter(parsed_filter);
         }
 
         if let Some(sort) = &input.sort {
@@ -77,17 +99,18 @@ impl SearchEngine {
             })
             .unwrap_or(Pagination::new(DEFAULT_START_PAGE, DEFAULT_PAGE_SIZE));
 
-        execution = execution.with_pagination(pagination);
-
-        execution
+        Ok(execution.with_pagination(pagination))
     }
 
-    async fn options(&self, name: &str) -> Vec<FilterOption> {
+    async fn options(&self, name: &str) -> Result<Vec<FilterOption>, AppError> {
         let engine = self.inner.read().await;
-        engine.options(name, OptionsQueryExecution::new()).await
+        engine
+            .options(name, OptionsQueryExecution::new())
+            .await
+            .map_err(|_| anyhow!("Could not create options for entity `{}`", name).into())
     }
 
-    async fn create_index(&self, name: &str, input: CreateIndexInput) {
+    async fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
         let descriptor = match input.kind {
             CreateIndexTypeInput::String => TypeDescriptor::String,
             CreateIndexTypeInput::Numeric => TypeDescriptor::Numeric,
@@ -101,17 +124,45 @@ impl SearchEngine {
         };
 
         let engine = self.inner.read().await;
-        engine.create_index(name, command).await;
+        engine
+            .create_index(name, command)
+            .await
+            .map_err(|_| anyhow!("Could not create index for entity `{}`", name).into())
+    }
+}
+
+#[derive(Error, Debug)]
+enum AppError {
+    #[error("filter query is not valid")]
+    InvalidFilterQuery,
+    #[error(transparent)]
+    ServerError(#[from] anyhow::Error),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        match self {
+            AppError::InvalidFilterQuery => Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::new(
+                    "Filter query is invalid or could not be parsed.".to_string(),
+                ))
+                .unwrap(),
+            AppError::ServerError(err) => Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::new(format!("Something went wrong: {}", err)))
+                .unwrap(),
+        }
     }
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), AppError> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
 
-    let search_engine = SearchEngine::init();
+    let search_engine = App::init()?;
 
     let app = Router::new()
         .route("/entities/:entity_name", post(create_entity))
@@ -125,11 +176,16 @@ async fn main() {
         .with_state(search_engine);
 
     axum::serve(listener, app).await.unwrap();
+
+    Ok(())
 }
 
-async fn create_entity(State(search): State<SearchEngine>, Path(name): Path<String>) -> Json<()> {
-    search.create_entity(&name).await;
-    Json(())
+async fn create_entity(
+    State(search): State<App>,
+    Path(name): Path<String>,
+) -> Result<Json<()>, AppError> {
+    search.create_entity(&name).await?;
+    Ok(Json(()))
 }
 
 #[derive(Deserialize)]
@@ -144,20 +200,20 @@ struct DataItemInput {
 }
 
 async fn bulk_upsert_entity(
-    State(search): State<SearchEngine>,
+    State(search): State<App>,
     Path(name): Path<String>,
     Json(input): Json<BulkUpsertEntity>,
-) -> Json<()> {
-    search.add_items(&name, input.data).await;
-    Json(())
+) -> Result<Json<()>, AppError> {
+    search.add_items(&name, input.data).await?;
+    Ok(Json(()))
 }
 
 async fn get_options(
-    State(search): State<SearchEngine>,
+    State(search): State<App>,
     Path(name): Path<String>,
-) -> Json<Vec<FilterOption>> {
-    let options = search.options(&name).await;
-    Json(options)
+) -> Result<Json<Vec<FilterOption>>, AppError> {
+    let options = search.options(&name).await?;
+    Ok(Json(options))
 }
 
 #[derive(Deserialize)]
@@ -178,12 +234,12 @@ enum CreateIndexTypeInput {
 }
 
 async fn create_index(
-    State(search): State<SearchEngine>,
+    State(search): State<App>,
     Path(name): Path<String>,
     Json(input): Json<CreateIndexInput>,
-) -> Json<()> {
-    search.create_index(&name, input).await;
-    Json(())
+) -> Result<Json<()>, AppError> {
+    search.create_index(&name, input).await?;
+    Ok(Json(()))
 }
 
 #[derive(Deserialize)]
@@ -222,10 +278,10 @@ struct QueryResponse {
 }
 
 async fn query(
-    State(search): State<SearchEngine>,
+    State(search): State<App>,
     Path(name): Path<String>,
     Json(input): Json<QueryIndexInput>,
-) -> Json<QueryResponse> {
-    let data = search.query(&name, input).await;
-    Json(QueryResponse { data })
+) -> Result<Json<QueryResponse>, AppError> {
+    let data = search.query(&name, input).await?;
+    Ok(Json(QueryResponse { data }))
 }

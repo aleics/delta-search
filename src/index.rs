@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
 use time::Date;
 
-use crate::data::{date_to_timestamp, FieldValue};
+use crate::data::{date_to_timestamp, timestamp_to_date, FieldValue};
 use crate::query::{FilterOperation, FilterResult, SortDirection};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum TypeDescriptor {
     String,
     Numeric,
@@ -110,6 +110,16 @@ impl Index {
         }
     }
 
+    pub(crate) fn get_value(&self, position: u32) -> Option<FieldValue> {
+        match self {
+            Index::String(index) => index.get_value(position),
+            Index::Numeric(index) => index.get_value(position),
+            Index::Date(index) => index.get_value(position),
+            Index::Enum(index) => index.get_value(position),
+            Index::Bool(index) => index.get_value(position),
+        }
+    }
+
     pub(crate) fn put(&mut self, value: FieldValue, position: u32) {
         match self {
             Index::String(index) => index.put(value, position),
@@ -189,6 +199,12 @@ impl StringIndex {
         }
     }
 
+    fn get_value(&self, position: u32) -> Option<FieldValue> {
+        self.inner
+            .get_value(position)
+            .map(|value| FieldValue::str(value.as_str()))
+    }
+
     fn put(&mut self, value: FieldValue, position: u32) {
         let value = value
             .get_string()
@@ -250,6 +266,12 @@ impl NumericIndex {
         NumericIndex {
             inner: SortableIndex::from_pairs(arr),
         }
+    }
+
+    fn get_value(&self, position: u32) -> Option<FieldValue> {
+        self.inner
+            .get_value(position)
+            .map(|value| FieldValue::Decimal(*value))
     }
 
     fn put(&mut self, value: FieldValue, position: u32) {
@@ -354,6 +376,15 @@ impl DateIndex {
         }
     }
 
+    fn get_value(&self, position: u32) -> Option<FieldValue> {
+        let value = self.inner.get_value(position)?;
+        let date = timestamp_to_date(*value)
+            .format(&Iso8601::DEFAULT)
+            .unwrap_or_else(|err| panic!("Date could not be formatted: {}", err));
+
+        Some(FieldValue::String(date))
+    }
+
     fn put(&mut self, value: FieldValue, position: u32) {
         let value =
             DateIndex::parse_value(&value).expect("Date index only allows to insert date values.");
@@ -437,6 +468,13 @@ impl EnumIndex {
         }
     }
 
+    fn get_value(&self, position: u32) -> Option<FieldValue> {
+        self.inner
+            .get_value(position)
+            .and_then(|value| self.values.get_index(*value))
+            .map(|value| FieldValue::str(value.as_str()))
+    }
+
     fn put(&mut self, value: FieldValue, position: u32) {
         let value = value
             .as_string()
@@ -515,6 +553,12 @@ impl BoolIndex {
         BoolIndex {
             inner: SortableIndex::from_pairs(arr),
         }
+    }
+
+    fn get_value(&self, position: u32) -> Option<FieldValue> {
+        self.inner
+            .get_value(position)
+            .map(|value| FieldValue::Bool(*value))
     }
 
     fn put(&mut self, value: FieldValue, position: u32) {
@@ -615,6 +659,15 @@ impl<T: Ord + Clone> SortableIndex<T> {
         }
 
         counts
+    }
+
+    fn get_value(&self, position: u32) -> Option<&T> {
+        for (value, bitmap) in &self.0 {
+            if bitmap.contains(position) {
+                return Some(value);
+            }
+        }
+        None
     }
 
     fn get(&self, key: &T) -> Option<&RoaringBitmap> {

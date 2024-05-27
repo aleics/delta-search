@@ -1,11 +1,14 @@
 #![feature(iter_array_chunks)]
 #![feature(iter_intersperse)]
 
+use query::QueryError;
 use std::collections::HashMap;
 use std::slice;
 use std::sync::Arc;
+use storage::StorageError;
 use time::Date;
 
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::data::{DataItem, DataItemId};
@@ -26,15 +29,15 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn init() -> Self {
+    pub fn init() -> Result<Self, EngineError> {
         let mut entities = HashMap::new();
 
         for name in storage::read_stored_entity_names() {
-            let storage = StorageBuilder::new(&name).build();
+            let storage = StorageBuilder::new(&name).build()?;
             entities.insert(name, Arc::new(RwLock::new(storage)));
         }
 
-        Engine { entities }
+        Ok(Engine { entities })
     }
 
     pub fn with_entities(entries: Vec<EntityStorage>) -> Self {
@@ -45,71 +48,107 @@ impl Engine {
         Engine { entities }
     }
 
-    pub fn create_entity(&mut self, name: String) {
+    pub fn create_entity(&mut self, name: String) -> Result<(), EngineError> {
         if self.entities.contains_key(&name) {
             panic!("Entity with name \"{}\" already exists", name);
         }
 
-        let entity = StorageBuilder::new(&name).build();
+        let entity = StorageBuilder::new(&name).build()?;
         self.entities.insert(name, Arc::new(RwLock::new(entity)));
+
+        Ok(())
     }
 
-    pub async fn query(&self, name: &str, execution: QueryExecution) -> Vec<DataItem> {
-        if let Some(entry) = self.entities.get(name) {
+    pub async fn query(
+        &self,
+        name: &str,
+        execution: QueryExecution,
+    ) -> Result<Vec<DataItem>, EngineError> {
+        let items = if let Some(entry) = self.entities.get(name) {
             let entity = entry.read().await;
-            execution.run(&entity)
+            execution.run(&entity)?
         } else {
             Vec::new()
-        }
+        };
+
+        Ok(items)
     }
 
-    pub async fn options(&self, name: &str, execution: OptionsQueryExecution) -> Vec<FilterOption> {
-        if let Some(entry) = self.entities.get(name) {
+    pub async fn options(
+        &self,
+        name: &str,
+        execution: OptionsQueryExecution,
+    ) -> Result<Vec<FilterOption>, EngineError> {
+        let options = if let Some(entry) = self.entities.get(name) {
             let entity = entry.read().await;
-            execution.run(&entity)
+            execution.run(&entity)?
         } else {
             Vec::new()
-        }
+        };
+        Ok(options)
     }
 
-    pub async fn add(&self, name: &str, item: &DataItem) {
+    pub async fn add(&self, name: &str, item: &DataItem) -> Result<(), EngineError> {
         self.add_multiple(name, slice::from_ref(item)).await
     }
 
-    pub async fn add_multiple(&self, name: &str, items: &[DataItem]) {
+    pub async fn add_multiple(&self, name: &str, items: &[DataItem]) -> Result<(), EngineError> {
         if let Some(entry) = self.entities.get(name) {
             let entity = entry.read().await;
-            entity.add(items)
+            entity.add(items)?;
         }
+        Ok(())
     }
 
-    pub async fn remove(&self, name: &str, id: &DataItemId) {
+    pub async fn remove(&self, name: &str, id: &DataItemId) -> Result<(), EngineError> {
         if let Some(entry) = self.entities.get(name) {
-            let entity = entry.write().await;
-            entity.remove(slice::from_ref(id));
+            let entity = entry.read().await;
+            entity.remove(slice::from_ref(id))?;
         }
+        Ok(())
     }
 
-    pub async fn store_deltas(&self, name: &str, date: Date, deltas: &[DeltaChange]) {
+    pub async fn store_deltas(
+        &self,
+        name: &str,
+        date: Date,
+        deltas: &[DeltaChange],
+    ) -> Result<(), EngineError> {
+        if let Some(entry) = self.entities.get(name) {
+            let entity = entry.read().await;
+            entity.add_deltas(date, deltas)?;
+        }
+        Ok(())
+    }
+
+    pub async fn clear(&self, name: &str) -> Result<(), EngineError> {
         if let Some(entry) = self.entities.get(name) {
             let mut entity = entry.write().await;
-            entity.add_deltas(date, deltas);
+            entity.clear()?;
         }
+        Ok(())
     }
 
-    pub async fn clear(&self, name: &str) {
+    pub async fn create_index(
+        &self,
+        name: &str,
+        command: CreateFieldIndex,
+    ) -> Result<(), EngineError> {
         if let Some(entry) = self.entities.get(name) {
             let mut entity = entry.write().await;
-            entity.clear();
+            entity.create_indices(vec![command])?;
         }
+        Ok(())
     }
+}
 
-    pub async fn create_index(&self, name: &str, command: CreateFieldIndex) {
-        if let Some(entry) = self.entities.get(name) {
-            let mut entity = entry.write().await;
-            entity.create_indices(vec![command]);
-        }
-    }
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum EngineError {
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+    #[error(transparent)]
+    Query(#[from] QueryError),
 }
 
 #[cfg(test)]
@@ -156,7 +195,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -184,7 +224,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -210,7 +251,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -240,7 +282,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -268,7 +311,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -293,7 +337,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -318,7 +363,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -347,7 +393,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -376,7 +423,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -412,7 +460,8 @@ mod tests {
         let mut matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_filter(filter))
-            .await;
+            .await
+            .unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -444,18 +493,19 @@ mod tests {
                 &runner.name,
                 Date::from_calendar_date(2023, Month::January, 1).unwrap(),
                 &[
-                    DecreaseScoreDelta::create(0, 10.0),
-                    DecreaseScoreDelta::create(1, 9.0),
+                    DecreaseScoreDelta::create(MICHAEL_JORDAN.id, 10.0),
+                    DecreaseScoreDelta::create(LIONEL_MESSI.id, 9.0),
                 ],
             )
-            .await;
+            .await
+            .unwrap();
 
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
             .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
 
-        let mut matches = runner.engine.query(&runner.name, execution).await;
+        let mut matches = runner.engine.query(&runner.name, execution).await.unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -464,7 +514,7 @@ mod tests {
             matches,
             vec![
                 Player {
-                    id: 1,
+                    id: LIONEL_MESSI.id,
                     name: "Lionel Messi".to_string(),
                     score: Some(8.0),
                     sport: Sport::Football,
@@ -499,14 +549,15 @@ mod tests {
                     Sport::Football,
                 )],
             )
-            .await;
+            .await
+            .unwrap();
 
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
             .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
 
-        let mut matches = runner.engine.query(&runner.name, execution).await;
+        let mut matches = runner.engine.query(&runner.name, execution).await.unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -548,7 +599,8 @@ mod tests {
                     .with_sort(sort)
                     .with_pagination(pagination),
             )
-            .await;
+            .await
+            .unwrap();
 
         // then
         assert_eq!(
@@ -581,7 +633,8 @@ mod tests {
         let matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_sort(sort))
-            .await;
+            .await
+            .unwrap();
 
         // then
         assert_eq!(
@@ -613,7 +666,8 @@ mod tests {
         let matches = runner
             .engine
             .query(&runner.name, QueryExecution::new().with_sort(sort))
-            .await;
+            .await
+            .unwrap();
 
         // then
         assert_eq!(
@@ -644,7 +698,8 @@ mod tests {
         let mut filter_options = runner
             .engine
             .options(&runner.name, OptionsQueryExecution::new())
-            .await;
+            .await
+            .unwrap();
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -707,7 +762,8 @@ mod tests {
                 &runner.name,
                 OptionsQueryExecution::new().with_filter(filter),
             )
-            .await;
+            .await
+            .unwrap();
 
         // then
         filter_options.sort_by(|a, b| a.field.cmp(&b.field));
@@ -755,14 +811,14 @@ mod tests {
             .await;
 
         // when
-        runner.engine.add(&runner.name, &ROGER).await;
+        runner.engine.add(&runner.name, &ROGER).await.unwrap();
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Roger".to_string()),
         ));
-        let matches = runner.engine.query(&runner.name, query).await;
+        let matches = runner.engine.query(&runner.name, query).await.unwrap();
 
         assert_eq!(matches, vec![ROGER.clone()]);
     }
@@ -782,14 +838,15 @@ mod tests {
         runner
             .engine
             .remove(&runner.name, &CRISTIANO_RONALDO.id)
-            .await;
+            .await
+            .unwrap();
 
         // then
         let query = QueryExecution::new().with_filter(CompositeFilter::eq(
             "name",
             FieldValue::String("Cristiano Ronaldo".to_string()),
         ));
-        let matches = runner.engine.query(&runner.name, query).await;
+        let matches = runner.engine.query(&runner.name, query).await.unwrap();
 
         assert!(matches.is_empty());
     }
