@@ -137,8 +137,11 @@ impl Engine {
         if let Some(entry) = self.entities.get(name) {
             let mut entity = entry.write().await;
             entity.create_indices(vec![command])?;
+
+            Ok(())
+        } else {
+            Err(EngineError::EntityNotFound)
         }
-        Ok(())
     }
 }
 
@@ -149,6 +152,8 @@ pub enum EngineError {
     Storage(#[from] StorageError),
     #[error(transparent)]
     Query(#[from] QueryError),
+    #[error("entity not found")]
+    EntityNotFound,
 }
 
 #[cfg(test)]
