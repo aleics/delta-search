@@ -152,13 +152,12 @@ impl Display for FieldValue {
             FieldValue::String(value) => write!(f, "{}", value),
             FieldValue::Decimal(value) => write!(f, "{}", value.0),
             FieldValue::Array(value) => {
-                let values_string = value
+                let values = value
                     .iter()
                     .map(|value| format!("{}", value))
-                    .intersperse(", ".into())
-                    .collect::<String>();
+                    .collect::<Vec<String>>();
 
-                write!(f, "[{}]", values_string)
+                write!(f, "[{}]", values.join(", "))
             }
         }
     }

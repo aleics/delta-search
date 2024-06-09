@@ -171,10 +171,7 @@ impl EntityStorage {
 
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
-    pub fn carry<I>(&mut self, data: I) -> Result<(), StorageError>
-    where
-        I: IntoIterator<Item = DataItem>,
-    {
+    pub fn carry(&mut self, data: &[DataItem]) -> Result<(), StorageError> {
         self.clear()?;
         self.add_multiple(data)?;
 
@@ -197,19 +194,10 @@ impl EntityStorage {
 
     /// Add multiple items using chunks so that multiple transactions are commited, depending on
     /// the amount of chunks generated.
-    fn add_multiple<I>(&self, data: I) -> Result<(), StorageError>
-    where
-        I: IntoIterator<Item = DataItem>,
-    {
+    fn add_multiple(&self, data: &[DataItem]) -> Result<(), StorageError> {
         // Add elements in chunks to optimise the storing execution write operations in bulk.
-        let mut chunks = data.into_iter().array_chunks::<100>();
-        for chunk in chunks.by_ref() {
-            self.add(&chunk)?;
-        }
-
-        // In case there's some leftovers after splitting in chunks
-        if let Some(remainder) = chunks.into_remainder() {
-            self.add(remainder.as_slice())?;
+        for chunk in data.chunks(100) {
+            self.add(chunk)?;
         }
 
         Ok(())

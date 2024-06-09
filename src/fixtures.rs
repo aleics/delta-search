@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::iter::FromIterator;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -128,7 +129,7 @@ pub fn create_players_storage(name: &str, data: Vec<DataItem>) -> EntityStorage 
 }
 
 fn carry_players(items: Vec<DataItem>, storage: &mut EntityStorage) {
-    storage.carry(items).unwrap();
+    storage.carry(&items).unwrap();
 
     storage
         .create_indices(vec![

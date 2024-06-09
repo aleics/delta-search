@@ -1,6 +1,3 @@
-#![feature(iter_array_chunks)]
-#![feature(iter_intersperse)]
-
 use query::QueryError;
 use std::collections::HashMap;
 use std::slice;
@@ -159,6 +156,7 @@ pub enum EngineError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::iter::FromIterator;
 
     use lazy_static::lazy_static;
     use time::{Date, Month};
