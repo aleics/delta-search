@@ -94,11 +94,11 @@ impl TestRunners {
     }
 }
 
-pub fn create_random_players(count: usize) -> Vec<DataItem> {
+pub fn create_random_players(count: u64) -> Vec<DataItem> {
     (0..count).map(create_player_from_index).collect()
 }
 
-pub fn create_player_from_index(index: usize) -> DataItem {
+pub fn create_player_from_index(index: u64) -> DataItem {
     let base = if index % 2 == 0 {
         10.0
     } else {
@@ -223,7 +223,7 @@ impl Sport {
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Player {
-    pub id: usize,
+    pub id: u64,
     pub name: String,
     pub score: Option<f64>,
     pub sport: Sport,
@@ -232,7 +232,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(id: usize, name: &str, sport: Sport, birth_date: &str, active: bool) -> Self {
+    pub fn new(id: u64, name: &str, sport: Sport, birth_date: &str, active: bool) -> Self {
         Player {
             id,
             name: name.to_string(),

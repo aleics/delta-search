@@ -23,7 +23,7 @@ lazy_static! {
     static ref PAGINATION: Pagination = Pagination::new(0, PAGE_SIZE);
     static ref NAME: String = "players_bench".to_string();
     static ref DATE: Date = Date::from_calendar_date(2023, Month::January, 1).unwrap();
-    static ref PLAYERS: Vec<DataItem> = create_random_players(COUNT);
+    static ref PLAYERS: Vec<DataItem> = create_random_players(COUNT as u64);
     static ref ENGINE: Engine =
         Engine::with_entities(vec![create_players_storage(&NAME, PLAYERS.to_vec())]);
 }

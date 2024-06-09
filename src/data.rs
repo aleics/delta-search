@@ -16,7 +16,7 @@ pub(crate) fn timestamp_to_date(timestamp: i64) -> Date {
         .date()
 }
 
-pub type DataItemId = usize;
+pub type DataItemId = u64;
 
 /// A data item is a generic representation of any element stored in the database.
 /// Data items are identified using the `id` property and contain a set of fields.
@@ -38,8 +38,7 @@ impl DataItem {
         let id = input
             .inner
             .get(id_field_name)
-            .and_then(|field| field.as_integer())
-            .and_then(|value| usize::try_from(*value).ok())
+            .and_then(|field| field.as_integer().copied())
             .unwrap_or_else(|| {
                 panic!(
                     "Field \"{}\" not found in input data item or value type can't be used as ID.",

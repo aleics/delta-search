@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::ops::Bound;
 use std::path::Path;
 
@@ -24,7 +25,7 @@ const DELTAS_DB_NAME: &str = "deltas";
 const ALL_ITEMS_KEY: &str = "__all";
 
 pub(crate) fn position_to_id(position: u32) -> DataItemId {
-    usize::try_from(position).expect("Position could not be mapped into an item ID")
+    u64::from(position)
 }
 
 pub(crate) fn id_to_position(id: DataItemId) -> u32 {
