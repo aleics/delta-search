@@ -1,0 +1,16 @@
+# Rust
+target/
+debug/
+benches/
+examples/
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Git
+.gitignore
+.github
+
+# delta-search
+delta-db/

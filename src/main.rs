@@ -158,7 +158,7 @@ impl IntoResponse for AppError {
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
         .await
         .unwrap();
 
@@ -174,6 +174,8 @@ async fn main() -> Result<(), AppError> {
         .route("/indices/:entity_name/options", get(get_options))
         .route("/indices/:entity_name/search", post(query))
         .with_state(search_engine);
+
+    println!("delta-search is running...");
 
     axum::serve(listener, app).await.unwrap();
 

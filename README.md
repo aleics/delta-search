@@ -10,6 +10,19 @@
 
 To see `delta-search` in action and understand how to use it, check out the different [examples](https://github.com/aleics/delta-search/tree/main/examples).
 
+### Docker
+`delta-search` can be run in Docker by building the image:
+
+```shell
+docker build -t delta-search .
+```
+
+And then starting a container:
+
+```shell
+docker run -dp 127.0.0.1:3000:3000 --rm --name delta-search delta-search
+```
+
 ### API
 You can execute different operations via REST API to create and update entities, as well as running queries. The API
 is available after running `delta-search` via:
