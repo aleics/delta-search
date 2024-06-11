@@ -21,25 +21,50 @@ jobs:
           override: true
           components: rustfmt, clippy
 
-      - name: cargo build
+      - name: build
         uses: actions-rs/cargo@v1
         with:
           command: build
 
-      - name: cargo test
+      - name: run unit tests
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-features
+          args: --lib --bins --all-features
 
-      - name: cargo fmt
+      - name: format
         uses: actions-rs/cargo@v1
         with:
           command: fmt
           args: --all -- --check
 
-      - name: cargo clippy
+      - name: lint
         uses: actions-rs/cargo@v1
         with:
           command: clippy
           args: --all-features --tests
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: start container
+        run: docker-compose up -d
+
+      - name: run integration tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --test '*'
+
+      - name: stop container
+        run: docker-compose down
