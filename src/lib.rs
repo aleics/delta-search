@@ -1,12 +1,13 @@
-use query::QueryError;
 use std::collections::HashMap;
 use std::slice;
 use std::sync::Arc;
-use storage::StorageError;
-use time::Date;
 
 use thiserror::Error;
+use time::Date;
 use tokio::sync::RwLock;
+
+use query::QueryError;
+use storage::StorageError;
 
 use crate::data::{DataItem, DataItemId};
 use crate::query::{DeltaChange, FilterOption, OptionsQueryExecution, QueryExecution};
@@ -155,7 +156,7 @@ pub enum EngineError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::iter::FromIterator;
 
     use lazy_static::lazy_static;
@@ -712,12 +713,12 @@ mod tests {
             vec![
                 FilterOption::new(
                     "active".to_string(),
-                    HashMap::from_iter([("true".to_string(), 2), ("false".to_string(), 3)])
+                    BTreeMap::from_iter([("true".to_string(), 2), ("false".to_string(), 3)])
                 ),
-                FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
+                FilterOption::new("birth_date".to_string(), BTreeMap::from_iter([])),
                 FilterOption::new(
                     "name".to_string(),
-                    HashMap::from_iter([
+                    BTreeMap::from_iter([
                         ("Cristiano Ronaldo".to_string(), 1),
                         ("Michael Jordan".to_string(), 1),
                         ("Lionel Messi".to_string(), 1),
@@ -727,7 +728,7 @@ mod tests {
                 ),
                 FilterOption::new(
                     "score".to_string(),
-                    HashMap::from_iter([
+                    BTreeMap::from_iter([
                         ("5".to_string(), 1),
                         ("9".to_string(), 2),
                         ("10".to_string(), 1)
@@ -735,7 +736,7 @@ mod tests {
                 ),
                 FilterOption::new(
                     "sport".to_string(),
-                    HashMap::from_iter([
+                    BTreeMap::from_iter([
                         ("Basketball".to_string(), 2),
                         ("Football".to_string(), 3)
                     ]),
@@ -776,12 +777,12 @@ mod tests {
             vec![
                 FilterOption::new(
                     "active".to_string(),
-                    HashMap::from_iter([("true".to_string(), 2), ("false".to_string(), 1)])
+                    BTreeMap::from_iter([("true".to_string(), 2), ("false".to_string(), 1)])
                 ),
-                FilterOption::new("birth_date".to_string(), HashMap::from_iter([])),
+                FilterOption::new("birth_date".to_string(), BTreeMap::from_iter([])),
                 FilterOption::new(
                     "name".to_string(),
-                    HashMap::from_iter([
+                    BTreeMap::from_iter([
                         ("Cristiano Ronaldo".to_string(), 1),
                         ("Michael Jordan".to_string(), 1),
                         ("Lionel Messi".to_string(), 1)
@@ -789,11 +790,11 @@ mod tests {
                 ),
                 FilterOption::new(
                     "score".to_string(),
-                    HashMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)]),
+                    BTreeMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)]),
                 ),
                 FilterOption::new(
                     "sport".to_string(),
-                    HashMap::from_iter([
+                    BTreeMap::from_iter([
                         ("Basketball".to_string(), 1),
                         ("Football".to_string(), 2)
                     ]),

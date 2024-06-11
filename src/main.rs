@@ -158,9 +158,7 @@ impl IntoResponse for AppError {
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
     let search_engine = App::init()?;
 

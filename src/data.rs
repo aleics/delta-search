@@ -1,9 +1,10 @@
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::{Display, Formatter};
+
 use num_traits::cast::FromPrimitive;
 use ordered_float::OrderedFloat;
 use serde::de::{Error, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
 use time::{Date, OffsetDateTime, Time};
 
 pub(crate) fn date_to_timestamp(date: Date) -> i64 {
@@ -23,12 +24,12 @@ pub type DataItemId = u64;
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DataItem {
     pub id: DataItemId,
-    pub fields: HashMap<String, FieldValue>,
+    pub fields: BTreeMap<String, FieldValue>,
 }
 
 impl DataItem {
     /// Create a new item with a given identifier and a set of fields.
-    pub fn new(id: DataItemId, fields: HashMap<String, FieldValue>) -> Self {
+    pub fn new(id: DataItemId, fields: BTreeMap<String, FieldValue>) -> Self {
         DataItem { id, fields }
     }
 
@@ -168,17 +169,17 @@ impl Display for FieldValue {
 /// way that it's compatible with `DataItem` and the inner's storage logic.
 #[derive(Default, Debug, PartialEq)]
 pub struct DataItemFieldsInput {
-    pub inner: HashMap<String, FieldValue>,
+    pub inner: BTreeMap<String, FieldValue>,
 }
 
 impl DataItemFieldsInput {
-    fn new(inner: HashMap<String, FieldValue>) -> Self {
+    fn new(inner: BTreeMap<String, FieldValue>) -> Self {
         DataItemFieldsInput { inner }
     }
 
-    fn with_capacity(size: usize) -> Self {
+    fn empty() -> Self {
         DataItemFieldsInput {
-            inner: HashMap::with_capacity(size),
+            inner: BTreeMap::default(),
         }
     }
 }
@@ -198,7 +199,7 @@ impl<'de> Visitor<'de> for InputDataItemVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut item = DataItemFieldsInput::with_capacity(map.size_hint().unwrap_or(0));
+        let mut item = DataItemFieldsInput::empty();
 
         // Read the values as `InputFieldValue`, so that inner maps are flatten into a single key-value map
         // using a path structure for the flattened keys.
@@ -444,8 +445,9 @@ impl<'de> Deserialize<'de> for InputFieldValue {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::data::{DataItemFieldsInput, FieldValue};
-    use std::collections::HashMap;
 
     #[test]
     fn deserializes() {
@@ -496,7 +498,7 @@ mod tests {
         // then
         assert_eq!(
             data,
-            DataItemFieldsInput::new(HashMap::from([
+            DataItemFieldsInput::new(BTreeMap::from([
                 (
                     "name".to_string(),
                     FieldValue::String("Elephant".to_string())

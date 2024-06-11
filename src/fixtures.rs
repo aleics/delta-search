@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::iter::FromIterator;
 use std::sync::Mutex;
@@ -250,7 +250,7 @@ impl Player {
     }
 
     pub fn as_item(&self) -> DataItem {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), FieldValue::str(&self.name));
         fields.insert(
             "sport".to_string(),

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use pest::iterators::Pair;
 use pest::Parser;
@@ -14,11 +14,11 @@ use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorag
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterOption {
     pub field: String,
-    pub values: HashMap<String, u64>,
+    pub values: BTreeMap<String, u64>,
 }
 
 impl FilterOption {
-    pub(crate) fn new(field: String, values: HashMap<String, u64>) -> Self {
+    pub(crate) fn new(field: String, values: BTreeMap<String, u64>) -> Self {
         FilterOption { field, values }
     }
 }

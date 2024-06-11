@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::iter::FromIterator;
 use std::ops::Bound;
 use std::panic;
@@ -173,11 +173,11 @@ impl Index {
         }
     }
 
-    pub(crate) fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+    pub(crate) fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
         match self {
             Index::String(index) => index.counts(items),
             Index::Numeric(index) => index.counts(items),
-            Index::Date(_) => HashMap::new(), // TODO: create ranges
+            Index::Date(_) => BTreeMap::new(), // TODO: create ranges
             Index::Enum(index) => index.counts(items),
             Index::Bool(index) => index.counts(items),
         }
@@ -230,7 +230,7 @@ impl StringIndex {
         self.inner.minus(&other.inner)
     }
 
-    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+    fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
         self.inner
             .counts(items)
             .into_iter()
@@ -301,7 +301,7 @@ impl NumericIndex {
         self.inner.minus(&other.inner)
     }
 
-    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+    fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
         self.inner
             .counts(items)
             .into_iter()
@@ -510,7 +510,7 @@ impl EnumIndex {
         self.inner.minus(&other.inner)
     }
 
-    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+    fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
         self.inner
             .counts(items)
             .into_iter()
@@ -586,7 +586,7 @@ impl BoolIndex {
         self.inner.minus(&other.inner)
     }
 
-    fn counts(&self, items: &RoaringBitmap) -> HashMap<String, u64> {
+    fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
         self.inner
             .counts(items)
             .into_iter()
@@ -713,8 +713,9 @@ impl<T: Ord + Clone> SortableIndex<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::index::{Index, NumericIndex};
     use roaring::RoaringBitmap;
+
+    use crate::index::{Index, NumericIndex};
 
     #[test]
     fn index_plus() {
