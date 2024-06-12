@@ -23,6 +23,12 @@ And then starting a container:
 docker run -dp 127.0.0.1:3000:3000 --rm --name delta-search delta-search
 ```
 
+Or using `docker-compose`:
+
+```shell
+docker compose up
+```
+
 ### API
 You can execute different operations via REST API to create and update entities, as well as running queries. The API
 is available after running `delta-search` via:
