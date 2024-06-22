@@ -73,12 +73,12 @@ impl QueryIndices {
         }
     }
 
-    fn execute_sort(&self, items: &RoaringBitmap, sort: &Sort) -> Vec<u32> {
+    fn execute_sort(&self, items: &RoaringBitmap, sort: &Sort) -> Result<Vec<u32>, QueryError> {
         let index = self
             .get(&sort.by)
-            .expect("Sort by criteria does not have an index.");
+            .ok_or_else(|| QueryError::MissingIndex(sort.by.to_string()))?;
 
-        index.sort(items, &sort.direction)
+        Ok(index.sort(items, &sort.direction))
     }
 
     fn compute_filter_options(&self, hits: RoaringBitmap) -> Vec<FilterOption> {
@@ -190,22 +190,23 @@ impl QueryExecution {
             .map(|filter| indices.execute_filter(filter))
             .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
 
-        let item_ids = self.sort(filter_result, &indices);
-
-        Ok(self.read_data(&item_ids, storage, &indices.indices))
+        let item_ids = self.sort(filter_result, &indices)?;
+        self.read_data(&item_ids, storage, &indices.indices)
     }
 
-    fn sort(&self, filter_result: FilterResult, indices: &QueryIndices) -> Vec<DataItemId> {
-        if let Some(sort) = &self.sort {
-            return indices
-                .execute_sort(&filter_result.hits, sort)
-                .iter()
-                .copied()
-                .map(position_to_id)
-                .collect();
-        }
+    fn sort(
+        &self,
+        filter_result: FilterResult,
+        indices: &QueryIndices,
+    ) -> Result<Vec<DataItemId>, QueryError> {
+        let sorted_ids = if let Some(sort) = &self.sort {
+            let sort_result = indices.execute_sort(&filter_result.hits, sort)?;
+            sort_result.into_iter().map(position_to_id).collect()
+        } else {
+            filter_result.hits.iter().map(position_to_id).collect()
+        };
 
-        filter_result.hits.iter().map(position_to_id).collect()
+        Ok(sorted_ids)
     }
 
     fn read_data(
@@ -213,13 +214,13 @@ impl QueryExecution {
         ids: &[DataItemId],
         storage: &EntityStorage,
         indices: &EntityIndices,
-    ) -> Vec<DataItem> {
+    ) -> Result<Vec<DataItem>, QueryError> {
         let mut data = Vec::new();
 
         let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
 
         for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            let Some(mut item) = storage.read_by_id(id) else {
+            let Some(mut item) = storage.read_by_id(id)? else {
                 continue;
             };
 
@@ -239,7 +240,7 @@ impl QueryExecution {
             data.push(item);
         }
 
-        data
+        Ok(data)
     }
 }
 
@@ -575,6 +576,8 @@ impl FilterParser {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum QueryError {
+    #[error("index is not present for field \"{0}\"")]
+    MissingIndex(String),
     #[error(transparent)]
     Storage(#[from] StorageError),
 }

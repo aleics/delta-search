@@ -353,25 +353,17 @@ impl EntityStorage {
         Ok(())
     }
 
-    /// Read an index from the DB by its field name.
+    /// Read the entity indices from the DB by their field names.
     ///
     /// Use the current transaction to don't create transactions implicitly, if not needed.
-    fn read_index(&self, txn: &RoTxn, field: &String) -> Option<Index> {
-        self.indices
-            .get(txn, field)
-            .unwrap_or_else(|_| panic!("Could not read index with \"{}\" from the DB", field))
-    }
-
     fn read_indices(&self, txn: &RoTxn, fields: &[String]) -> Result<EntityIndices, StorageError> {
-        let field_indices = fields
-            .iter()
-            .filter_map(|name| {
-                self.indices
-                    .get(txn, name)
-                    .expect("Could not read index from DB.")
-                    .map(|index| (name.to_string(), index))
-            })
-            .collect();
+        let mut field_indices = HashMap::with_capacity(fields.len());
+
+        for field in fields {
+            if let Some(index) = self.indices.get(txn, field)? {
+                field_indices.insert(field.to_string(), index);
+            }
+        }
 
         let all = self.documents.get(txn, ALL_ITEMS_KEY)?.unwrap_or_default();
 
@@ -382,15 +374,16 @@ impl EntityStorage {
         })
     }
 
+    /// Read all the entity indices from the DB.
+    ///
+    /// Use the current transaction to don't create transactions implicitly, if not needed.
     fn read_all_indices(&self, txn: &RoTxn) -> Result<EntityIndices, StorageError> {
-        let field_indices = self
-            .indices
-            .iter(txn)?
-            .map(|item| {
-                item.map(|(key, value)| (key.to_string(), value))
-                    .expect("Could not read index from DB.")
-            })
-            .collect();
+        let mut field_indices = HashMap::new();
+
+        for item in self.indices.iter(txn)? {
+            let (field, index) = item?;
+            field_indices.insert(field.to_string(), index);
+        }
 
         let all = self.documents.get(txn, ALL_ITEMS_KEY)?.unwrap_or_default();
 
@@ -496,12 +489,9 @@ impl EntityStorage {
     }
 
     /// Read a data item from the storage using its identifier.
-    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Option<DataItem> {
+    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Result<Option<DataItem>, StorageError> {
         let txn = self.env.read_txn().unwrap();
-
-        self.data
-            .get(&txn, id)
-            .expect("Could not read item from DB")
+        Ok(self.data.get(&txn, id)?)
     }
 
     pub(crate) fn add_deltas(

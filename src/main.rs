@@ -19,6 +19,7 @@ use delta_search::query::{
 };
 use delta_search::storage::CreateFieldIndex;
 use delta_search::Engine;
+use tracing::{error, info};
 
 const DEFAULT_START_PAGE: usize = 0;
 const DEFAULT_PAGE_SIZE: usize = 500;
@@ -30,7 +31,9 @@ struct App {
 
 impl App {
     fn init() -> Result<App, AppError> {
-        let engine = Engine::init().map_err(|_| anyhow!("Could not initialize engine"))?;
+        let engine = Engine::init()
+            .inspect_err(|err| error!("Could not initialize engine: {}", err))
+            .map_err(|_| anyhow!("Could not initialize engine"))?;
 
         Ok(App {
             inner: Arc::new(RwLock::new(engine)),
@@ -41,6 +44,7 @@ impl App {
         let mut engine = self.inner.write().await;
         engine
             .create_entity(name.to_string())
+            .inspect_err(|err| error!("Could not create entity: {}", err))
             .map_err(|_| anyhow!("Could not create entity `{}`", name))?;
 
         Ok(())
@@ -56,6 +60,7 @@ impl App {
         engine
             .add_multiple(name, items.as_slice())
             .await
+            .inspect_err(|err| error!("Could not add items: {}", err))
             .map_err(|_| anyhow!("Could not add items for entity `{}`", name))?;
 
         Ok(())
@@ -68,7 +73,8 @@ impl App {
         engine
             .query(name, execution)
             .await
-            .map_err(|_| anyhow!("Could not add items for entity `{}`", name).into())
+            .inspect_err(|err| error!("Query could not be executed: {}", err))
+            .map_err(|_| anyhow!("Query for entity `{}` could not be executed", name).into())
     }
 
     fn build_query_execution(input: QueryIndexInput) -> Result<QueryExecution, AppError> {
@@ -107,6 +113,7 @@ impl App {
         engine
             .options(name, OptionsQueryExecution::new())
             .await
+            .inspect_err(|err| error!("Could not create options: {}", err))
             .map_err(|_| anyhow!("Could not create options for entity `{}`", name).into())
     }
 
@@ -127,6 +134,7 @@ impl App {
         engine
             .create_index(name, command)
             .await
+            .inspect_err(|err| error!("Could not create index: {}", err))
             .map_err(|_| anyhow!("Could not create index for entity `{}`", name).into())
     }
 }
@@ -158,6 +166,7 @@ impl IntoResponse for AppError {
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
+    tracing_subscriber::fmt::init();
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
     let search_engine = App::init()?;
@@ -173,7 +182,7 @@ async fn main() -> Result<(), AppError> {
         .route("/indices/:entity_name/search", post(query))
         .with_state(search_engine);
 
-    println!("delta-search is running...");
+    info!("delta-search is running...");
 
     axum::serve(listener, app).await.unwrap();
 
