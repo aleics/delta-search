@@ -11,7 +11,8 @@ use delta_search::fixtures::{
     Sport,
 };
 use delta_search::query::{
-    CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, Sort, SortDirection,
+    CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, QueryScope, Sort,
+    SortDirection,
 };
 use delta_search::Engine;
 use time::{Date, Month};
@@ -114,7 +115,7 @@ fn bench_apply_deltas(b: &mut Bencher) {
     b.iter(move || {
         tokio_test::block_on(async {
             let query = QueryExecution::new()
-                .with_date(DATE.next_day().unwrap())
+                .with_scope(QueryScope::date(DATE.next_day().unwrap()))
                 .with_pagination(*PAGINATION);
 
             ENGINE.query(&NAME, query).await.unwrap();

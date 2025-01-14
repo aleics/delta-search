@@ -23,6 +23,28 @@ impl FilterOption {
     }
 }
 
+#[derive(Debug, PartialEq, Deserialize)]
+pub struct QueryScope {
+    pub(crate) context: Option<u64>,
+    pub(crate) date: Date,
+}
+
+impl QueryScope {
+    pub fn date(date: Date) -> Self {
+        QueryScope {
+            context: None,
+            date,
+        }
+    }
+
+    pub fn context(context: u64, date: Date) -> Self {
+        QueryScope {
+            context: Some(context),
+            date,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct QueryIndices {
     indices: EntityIndices,
@@ -95,7 +117,7 @@ impl QueryIndices {
 #[derive(Default)]
 pub struct OptionsQueryExecution {
     filter: Option<CompositeFilter>,
-    date: Option<Date>,
+    scope: Option<QueryScope>,
     ref_fields: Option<Vec<String>>,
 }
 
@@ -113,18 +135,18 @@ impl OptionsQueryExecution {
         self
     }
 
-    pub fn with_date(mut self, date: Date) -> Self {
-        self.date = Some(date);
+    pub fn with_scope(mut self, scope: QueryScope) -> Self {
+        self.scope = Some(scope);
         self
     }
 
     pub fn run(self, storage: &EntityStorage) -> Result<Vec<FilterOption>, QueryError> {
         // Read the indices from storage. In case no fields are referenced, use all indices
         // as filter options.
-        let indices = match (self.ref_fields, self.date) {
-            (Some(fields), Some(date)) => storage.read_indices_in(date, fields.as_slice()),
+        let indices = match (self.ref_fields, &self.scope) {
+            (Some(fields), Some(scope)) => storage.read_indices_in(scope, fields.as_slice()),
             (Some(fields), None) => storage.read_current_indices(fields.as_slice()),
-            (None, Some(date)) => storage.read_all_indices_in(date),
+            (None, Some(scope)) => storage.read_all_indices_in(scope),
             (None, None) => storage.read_all_current_indices(),
         }?;
 
@@ -144,7 +166,7 @@ impl OptionsQueryExecution {
 pub struct QueryExecution {
     filter: Option<CompositeFilter>,
     sort: Option<Sort>,
-    date: Option<Date>,
+    scope: Option<QueryScope>,
     pagination: Option<Pagination>,
     ref_fields: Vec<String>,
 }
@@ -171,14 +193,14 @@ impl QueryExecution {
         self
     }
 
-    pub fn with_date(mut self, date: Date) -> Self {
-        self.date = Some(date);
+    pub fn with_scope(mut self, scope: QueryScope) -> Self {
+        self.scope = Some(scope);
         self
     }
 
     pub fn run(self, storage: &EntityStorage) -> Result<Vec<DataItem>, QueryError> {
-        let indices = match self.date {
-            Some(date) => storage.read_indices_in(date, &self.ref_fields),
+        let indices = match &self.scope {
+            Some(scope) => storage.read_indices_in(scope, &self.ref_fields),
             None => storage.read_current_indices(&self.ref_fields),
         }?;
 
@@ -404,15 +426,10 @@ pub enum FilterOperation {
     LessThanOrEqual(FieldValue),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeltaScope {
-    pub id: DataItemId,
-    pub field_name: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct DeltaChange {
-    pub scope: DeltaScope,
+    pub id: DataItemId,
+    pub field_name: String,
     pub before: FieldValue,
     pub after: FieldValue,
 }
@@ -420,7 +437,8 @@ pub struct DeltaChange {
 impl DeltaChange {
     pub fn new(id: DataItemId, field_name: String, before: FieldValue, after: FieldValue) -> Self {
         DeltaChange {
-            scope: DeltaScope { id, field_name },
+            id,
+            field_name,
             before,
             after,
         }

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryFrom;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Bound;
 use std::path::Path;
 
-use heed::byteorder::BE;
 use heed::types::*;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
@@ -13,7 +13,7 @@ use time::Date;
 
 use crate::data::{date_to_timestamp, DataItem};
 use crate::index::{Index, TypeDescriptor};
-use crate::query::DeltaChange;
+use crate::query::{DeltaChange, QueryScope};
 use crate::DataItemId;
 
 pub(crate) const DB_FOLDER: &str = "./delta-db";
@@ -75,17 +75,49 @@ impl StorageBuilder {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+pub(crate) struct StoredDeltaScope {
+    context: Option<u64>,
+    timestamp: i64,
+}
+
+impl StoredDeltaScope {
+    pub(crate) fn date(date: Date) -> Self {
+        StoredDeltaScope {
+            context: None,
+            timestamp: date_to_timestamp(date),
+        }
+    }
+
+    fn get_id(&self) -> u64 {
+        let mut s = DefaultHasher::new();
+        self.context.hash(&mut s);
+        s.finish()
+    }
+}
+
+impl From<&QueryScope> for StoredDeltaScope {
+    fn from(value: &QueryScope) -> Self {
+        StoredDeltaScope {
+            context: value.context,
+            timestamp: date_to_timestamp(value.date),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredDelta {
     affected: RoaringBitmap,
+    field_name: String,
     before: Index,
     after: Index,
 }
 
 impl StoredDelta {
-    fn from_type(descriptor: &TypeDescriptor) -> Self {
+    fn from_type(field_name: String, descriptor: &TypeDescriptor) -> Self {
         StoredDelta {
             affected: RoaringBitmap::new(),
+            field_name,
             before: Index::from_type(descriptor),
             after: Index::from_type(descriptor),
         }
@@ -99,7 +131,7 @@ pub struct EntityStorage {
     data: Database<OwnedType<DataItemId>, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
-    deltas: Database<OwnedType<I64<BE>>, SerdeBincode<HashMap<String, StoredDelta>>>,
+    deltas: Database<OwnedType<u64>, SerdeBincode<BTreeMap<i64, StoredDelta>>>,
     index_descriptors: HashMap<String, TypeDescriptor>,
 }
 
@@ -397,28 +429,30 @@ impl EntityStorage {
     fn read_deltas(
         &self,
         txn: &RoTxn,
-        date: Date,
+        scope: &QueryScope,
     ) -> Result<HashMap<String, StoredDelta>, StorageError> {
-        let timestamp = I64::<BE>::new(date_to_timestamp(date));
+        let scope = StoredDeltaScope::from(scope);
 
-        let deltas_by_date = self
-            .deltas
-            .range(txn, &(Bound::Unbounded, Bound::Included(timestamp)))?;
+        let Some(deltas_in_scope) = self.deltas.get(txn, &scope.get_id())? else {
+            return Ok(HashMap::new());
+        };
 
-        let mut aggregated_deltas: HashMap<String, StoredDelta> = HashMap::new();
+        let aggregated_deltas = deltas_in_scope
+            .range((Bound::Unbounded, Bound::Included(scope.timestamp)))
+            .fold(
+                HashMap::<String, StoredDelta>::new(),
+                |mut acc, (_, stored_delta)| {
+                    if let Some(aggregated_delta) = acc.get_mut(&stored_delta.field_name) {
+                        aggregated_delta.before.plus(&stored_delta.before);
+                        aggregated_delta.after.plus(&stored_delta.after);
+                        aggregated_delta.affected |= &stored_delta.affected;
+                    } else {
+                        acc.insert(stored_delta.field_name.clone(), stored_delta.clone());
+                    };
 
-        for entry in deltas_by_date {
-            let (_, stored_deltas) = entry?;
-            for (field, stored_delta) in stored_deltas {
-                if let Some(aggregated_delta) = aggregated_deltas.get_mut(&field) {
-                    aggregated_delta.before.plus(&stored_delta.before);
-                    aggregated_delta.after.plus(&stored_delta.after);
-                    aggregated_delta.affected |= &stored_delta.affected;
-                } else {
-                    aggregated_deltas.insert(field, stored_delta);
-                }
-            }
-        }
+                    acc
+                },
+            );
 
         Ok(aggregated_deltas)
     }
@@ -444,12 +478,12 @@ impl EntityStorage {
 
     pub fn read_indices_in(
         &self,
-        date: Date,
+        scope: &QueryScope,
         fields: &[String],
     ) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
 
-        let deltas = self.read_deltas(&txn, date)?;
+        let deltas = self.read_deltas(&txn, scope)?;
 
         let mut indices = if deltas.is_empty() {
             self.read_indices(&txn, fields)?
@@ -464,10 +498,10 @@ impl EntityStorage {
         Ok(indices.with_affected(affected))
     }
 
-    pub fn read_all_indices_in(&self, date: Date) -> Result<EntityIndices, StorageError> {
+    pub fn read_all_indices_in(&self, scope: &QueryScope) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
 
-        let deltas = self.read_deltas(&txn, date)?;
+        let deltas = self.read_deltas(&txn, scope)?;
         let mut indices = self.read_all_indices(&txn)?;
 
         let affected = EntityStorage::apply_deltas(deltas, &mut indices);
@@ -496,39 +530,41 @@ impl EntityStorage {
 
     pub(crate) fn add_deltas(
         &self,
-        date: Date,
+        scope: StoredDeltaScope,
         deltas: &[DeltaChange],
     ) -> Result<(), StorageError> {
-        let timestamp = I64::<BE>::new(date_to_timestamp(date));
-
         let mut txn = self.env.write_txn()?;
 
-        let mut current = self.deltas.get(&txn, &timestamp)?.unwrap_or_default();
+        let scope_id = scope.get_id();
+        let mut current = self.deltas.get(&txn, &scope_id)?.unwrap_or_default();
 
         // Iterate over the deltas to create for each field name the before and after index
         for delta in deltas {
             let type_descriptor = self
                 .index_descriptors
-                .get(&delta.scope.field_name)
+                .get(&delta.field_name)
                 .unwrap_or_else(|| {
                     panic!(
                         "Could not store delta. Field name \"{}\" is not available in the DB.",
-                        &delta.scope.field_name
+                        &delta.field_name
                     )
                 });
 
             let stored_delta = current
-                .entry(delta.scope.field_name.clone())
-                .or_insert(StoredDelta::from_type(type_descriptor));
+                .entry(scope.timestamp)
+                .or_insert(StoredDelta::from_type(
+                    delta.field_name.clone(),
+                    type_descriptor,
+                ));
 
-            let position = id_to_position(delta.scope.id);
+            let position = id_to_position(delta.id);
 
             stored_delta.before.put(delta.before.clone(), position);
             stored_delta.after.put(delta.after.clone(), position);
             stored_delta.affected.insert(position);
         }
 
-        self.deltas.put(&mut txn, &timestamp, &current)?;
+        self.deltas.put(&mut txn, &scope_id, &current)?;
 
         txn.commit()?;
 

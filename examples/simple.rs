@@ -4,7 +4,7 @@ use delta_search::fixtures::{
     SwitchSportsDelta,
 };
 use delta_search::query::{
-    CompositeFilter, OptionsQueryExecution, QueryExecution, Sort, SortDirection,
+    CompositeFilter, OptionsQueryExecution, QueryExecution, QueryScope, Sort, SortDirection,
 };
 use delta_search::Engine;
 use time::{Date, Month};
@@ -85,7 +85,9 @@ async fn main() {
             FieldValue::String(Sport::Basketball.as_string()),
         ))
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
+        .with_scope(QueryScope::date(
+            Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+        ));
 
     let players = engine.query(name, query).await;
 

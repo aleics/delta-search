@@ -7,7 +7,7 @@ use time::Date;
 use tokio::sync::RwLock;
 
 use query::QueryError;
-use storage::StorageError;
+use storage::{StorageError, StoredDeltaScope};
 
 use crate::data::{DataItem, DataItemId};
 use crate::query::{DeltaChange, FilterOption, OptionsQueryExecution, QueryExecution};
@@ -112,9 +112,11 @@ impl Engine {
         date: Date,
         deltas: &[DeltaChange],
     ) -> Result<(), EngineError> {
+        let scope = StoredDeltaScope::date(date);
+
         if let Some(entry) = self.entities.get(name) {
             let entity = entry.read().await;
-            entity.add_deltas(date, deltas)?;
+            entity.add_deltas(scope, deltas)?;
         }
         Ok(())
     }
@@ -168,8 +170,8 @@ mod tests {
         michael_jordan, roger, DecreaseScoreDelta, Player, Sport, SwitchSportsDelta, TestRunners,
     };
     use crate::query::{
-        CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution, Sort,
-        SortDirection,
+        CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution,
+        QueryScope, Sort, SortDirection,
     };
 
     lazy_static! {
@@ -507,7 +509,9 @@ mod tests {
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
-            .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
+            .with_scope(QueryScope::date(
+                Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            ));
 
         let mut matches = runner.engine.query(&runner.name, execution).await.unwrap();
 
@@ -559,7 +563,9 @@ mod tests {
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
-            .with_date(Date::from_calendar_date(2024, Month::January, 1).unwrap());
+            .with_scope(QueryScope::date(
+                Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            ));
 
         let mut matches = runner.engine.query(&runner.name, execution).await.unwrap();
 
