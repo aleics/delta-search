@@ -34,7 +34,7 @@ mod integration_tests {
 
         // when
         let response = CLIENT
-            .post(&format!("http://127.0.0.1:3000/entities/{}", name))
+            .post(format!("http://127.0.0.1:3000/entities/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -84,7 +84,7 @@ mod integration_tests {
 
         // when
         let response = CLIENT
-            .put(&format!("http://127.0.0.1:3000/data/{}", name))
+            .put(format!("http://127.0.0.1:3000/data/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -104,7 +104,7 @@ mod integration_tests {
 
         // when
         let response = CLIENT
-            .put(&format!("http://127.0.0.1:3000/indices/{}", name))
+            .put(format!("http://127.0.0.1:3000/indices/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -118,7 +118,7 @@ mod integration_tests {
     async fn reads_filter_options(name: &str) {
         // when
         let response = CLIENT
-            .get(&format!("http://127.0.0.1:3000/indices/{}/options", name))
+            .get(format!("http://127.0.0.1:3000/indices/{}/options", name))
             .send()
             .await
             .unwrap();
@@ -160,7 +160,7 @@ mod integration_tests {
 
         // when
         let response = CLIENT
-            .post(&format!("http://127.0.0.1:3000/indices/{}/search", name))
+            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
