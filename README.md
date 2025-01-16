@@ -23,7 +23,7 @@ And then starting a container:
 docker run -dp 127.0.0.1:3000:3000 --rm --name delta-search delta-search
 ```
 
-Or using `docker-compose`:
+Or using `docker compose`:
 
 ```shell
 docker compose up

@@ -58,7 +58,7 @@ jobs:
           override: true
 
       - name: start container
-        run: docker-compose up -d
+        run: docker compose up -d
 
       - name: run integration tests
         uses: actions-rs/cargo@v1
@@ -67,4 +67,4 @@ jobs:
           args: --test '*'
 
       - name: stop container
-        run: docker-compose down
+        run: docker compose down
