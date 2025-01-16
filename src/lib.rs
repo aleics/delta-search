@@ -3,11 +3,10 @@ use std::slice;
 use std::sync::Arc;
 
 use thiserror::Error;
-use time::Date;
 use tokio::sync::RwLock;
 
-use query::QueryError;
-use storage::{StorageError, StoredDeltaScope};
+use query::{DeltaScope, QueryError};
+use storage::StorageError;
 
 use crate::data::{DataItem, DataItemId};
 use crate::query::{DeltaChange, FilterOption, OptionsQueryExecution, QueryExecution};
@@ -109,11 +108,9 @@ impl Engine {
     pub async fn store_deltas(
         &self,
         name: &str,
-        date: Date,
+        scope: &DeltaScope,
         deltas: &[DeltaChange],
     ) -> Result<(), EngineError> {
-        let scope = StoredDeltaScope::date(date);
-
         if let Some(entry) = self.entities.get(name) {
             let entity = entry.read().await;
             entity.add_deltas(scope, deltas)?;
@@ -170,8 +167,8 @@ mod tests {
         michael_jordan, roger, DecreaseScoreDelta, Player, Sport, SwitchSportsDelta, TestRunners,
     };
     use crate::query::{
-        CompositeFilter, FilterOption, OptionsQueryExecution, Pagination, QueryExecution,
-        QueryScope, Sort, SortDirection,
+        CompositeFilter, DeltaScope, FilterOption, OptionsQueryExecution, Pagination,
+        QueryExecution, Sort, SortDirection,
     };
 
     lazy_static! {
@@ -493,23 +490,23 @@ mod tests {
             ])
             .await;
 
+        let delta_scope =
+            DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
+        let deltas = [
+            DecreaseScoreDelta::create(MICHAEL_JORDAN.id, 10.0),
+            DecreaseScoreDelta::create(LIONEL_MESSI.id, 9.0),
+        ];
+
         runner
             .engine
-            .store_deltas(
-                &runner.name,
-                Date::from_calendar_date(2023, Month::January, 1).unwrap(),
-                &[
-                    DecreaseScoreDelta::create(MICHAEL_JORDAN.id, 10.0),
-                    DecreaseScoreDelta::create(LIONEL_MESSI.id, 9.0),
-                ],
-            )
+            .store_deltas(&runner.name, &delta_scope, &deltas)
             .await
             .unwrap();
 
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
-            .with_scope(QueryScope::date(
+            .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
@@ -546,24 +543,24 @@ mod tests {
             ])
             .await;
 
+        let delta_scope =
+            DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
+        let deltas = [SwitchSportsDelta::create(
+            MICHAEL_JORDAN.id,
+            Sport::Basketball,
+            Sport::Football,
+        )];
+
         runner
             .engine
-            .store_deltas(
-                &runner.name,
-                Date::from_calendar_date(2023, Month::January, 1).unwrap(),
-                &[SwitchSportsDelta::create(
-                    0,
-                    Sport::Basketball,
-                    Sport::Football,
-                )],
-            )
+            .store_deltas(&runner.name, &delta_scope, &deltas)
             .await
             .unwrap();
 
         // when
         let execution = QueryExecution::new()
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
-            .with_scope(QueryScope::date(
+            .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
@@ -574,6 +571,93 @@ mod tests {
 
         assert_eq!(
             matches,
+            vec![
+                Player {
+                    id: 0,
+                    name: "Michael Jordan".to_string(),
+                    score: Some(10.0),
+                    sport: Sport::Football,
+                    birth_date: "1963-02-17".to_string(),
+                    active: false,
+                }
+                .as_item(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_with_delta_context() {
+        // given
+        let runner = STORAGES
+            .start_runner(vec![
+                MICHAEL_JORDAN.clone(),
+                LIONEL_MESSI.clone(),
+                CRISTIANO_RONALDO.clone(),
+            ])
+            .await;
+
+        let context = 0;
+        let delta_scope = DeltaScope::context(
+            context,
+            Date::from_calendar_date(2023, Month::January, 1).unwrap(),
+        );
+
+        let deltas = [SwitchSportsDelta::create(
+            MICHAEL_JORDAN.id,
+            Sport::Basketball,
+            Sport::Football,
+        )];
+
+        runner
+            .engine
+            .store_deltas(&runner.name, &delta_scope, &deltas)
+            .await
+            .unwrap();
+
+        // when
+        let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
+
+        let execution_without_context = QueryExecution::new()
+            .with_filter(filter.clone())
+            .with_scope(DeltaScope::date(
+                Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            ));
+
+        let mut matches_without_context = runner
+            .engine
+            .query(&runner.name, execution_without_context)
+            .await
+            .unwrap();
+
+        // then
+        matches_without_context.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches_without_context,
+            vec![LIONEL_MESSI.clone(), CRISTIANO_RONALDO.clone(),]
+        );
+
+        // when
+        let execution_with_context = QueryExecution::new()
+            .with_filter(filter.clone())
+            .with_scope(DeltaScope::context(
+                context,
+                Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            ));
+
+        let mut matches_with_context = runner
+            .engine
+            .query(&runner.name, execution_with_context)
+            .await
+            .unwrap();
+
+        // then
+        matches_with_context.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches_with_context,
             vec![
                 Player {
                     id: 0,

@@ -13,7 +13,7 @@ use time::Date;
 
 use crate::data::{date_to_timestamp, DataItem};
 use crate::index::{Index, TypeDescriptor};
-use crate::query::{DeltaChange, QueryScope};
+use crate::query::{DeltaChange, DeltaScope};
 use crate::DataItemId;
 
 pub(crate) const DB_FOLDER: &str = "./delta-db";
@@ -96,8 +96,8 @@ impl StoredDeltaScope {
     }
 }
 
-impl From<&QueryScope> for StoredDeltaScope {
-    fn from(value: &QueryScope) -> Self {
+impl From<&DeltaScope> for StoredDeltaScope {
+    fn from(value: &DeltaScope) -> Self {
         StoredDeltaScope {
             context: value.context,
             timestamp: date_to_timestamp(value.date),
@@ -429,7 +429,7 @@ impl EntityStorage {
     fn read_deltas(
         &self,
         txn: &RoTxn,
-        scope: &QueryScope,
+        scope: &DeltaScope,
     ) -> Result<HashMap<String, StoredDelta>, StorageError> {
         let scope = StoredDeltaScope::from(scope);
 
@@ -478,7 +478,7 @@ impl EntityStorage {
 
     pub fn read_indices_in(
         &self,
-        scope: &QueryScope,
+        scope: &DeltaScope,
         fields: &[String],
     ) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
@@ -498,7 +498,7 @@ impl EntityStorage {
         Ok(indices.with_affected(affected))
     }
 
-    pub fn read_all_indices_in(&self, scope: &QueryScope) -> Result<EntityIndices, StorageError> {
+    pub fn read_all_indices_in(&self, scope: &DeltaScope) -> Result<EntityIndices, StorageError> {
         let txn = self.env.read_txn().unwrap();
 
         let deltas = self.read_deltas(&txn, scope)?;
@@ -530,9 +530,10 @@ impl EntityStorage {
 
     pub(crate) fn add_deltas(
         &self,
-        scope: StoredDeltaScope,
+        scope: &DeltaScope,
         deltas: &[DeltaChange],
     ) -> Result<(), StorageError> {
+        let scope = StoredDeltaScope::from(scope);
         let mut txn = self.env.write_txn()?;
 
         let scope_id = scope.get_id();

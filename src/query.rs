@@ -24,21 +24,21 @@ impl FilterOption {
 }
 
 #[derive(Debug, PartialEq, Deserialize)]
-pub struct QueryScope {
+pub struct DeltaScope {
     pub(crate) context: Option<u64>,
     pub(crate) date: Date,
 }
 
-impl QueryScope {
+impl DeltaScope {
     pub fn date(date: Date) -> Self {
-        QueryScope {
+        DeltaScope {
             context: None,
             date,
         }
     }
 
     pub fn context(context: u64, date: Date) -> Self {
-        QueryScope {
+        DeltaScope {
             context: Some(context),
             date,
         }
@@ -117,7 +117,7 @@ impl QueryIndices {
 #[derive(Default)]
 pub struct OptionsQueryExecution {
     filter: Option<CompositeFilter>,
-    scope: Option<QueryScope>,
+    scope: Option<DeltaScope>,
     ref_fields: Option<Vec<String>>,
 }
 
@@ -135,7 +135,7 @@ impl OptionsQueryExecution {
         self
     }
 
-    pub fn with_scope(mut self, scope: QueryScope) -> Self {
+    pub fn with_scope(mut self, scope: DeltaScope) -> Self {
         self.scope = Some(scope);
         self
     }
@@ -166,7 +166,7 @@ impl OptionsQueryExecution {
 pub struct QueryExecution {
     filter: Option<CompositeFilter>,
     sort: Option<Sort>,
-    scope: Option<QueryScope>,
+    scope: Option<DeltaScope>,
     pagination: Option<Pagination>,
     ref_fields: Vec<String>,
 }
@@ -193,7 +193,7 @@ impl QueryExecution {
         self
     }
 
-    pub fn with_scope(mut self, scope: QueryScope) -> Self {
+    pub fn with_scope(mut self, scope: DeltaScope) -> Self {
         self.scope = Some(scope);
         self
     }
@@ -266,7 +266,7 @@ impl QueryExecution {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CompositeFilter {
     And(Vec<CompositeFilter>),
     Or(Vec<CompositeFilter>),
@@ -410,13 +410,13 @@ impl Sort {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Filter {
     name: String,
     operation: FilterOperation,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum FilterOperation {
     Eq(FieldValue),
     Between(FieldValue, FieldValue),

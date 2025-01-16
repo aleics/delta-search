@@ -4,7 +4,7 @@ use delta_search::fixtures::{
     SwitchSportsDelta,
 };
 use delta_search::query::{
-    CompositeFilter, OptionsQueryExecution, QueryExecution, QueryScope, Sort, SortDirection,
+    CompositeFilter, DeltaScope, OptionsQueryExecution, QueryExecution, Sort, SortDirection,
 };
 use delta_search::Engine;
 use time::{Date, Month};
@@ -72,10 +72,10 @@ async fn main() {
         SwitchSportsDelta::create(lionel_messi_id, Sport::Football, Sport::Basketball),
     ];
 
-    let date = Date::from_calendar_date(2023, Month::January, 1).unwrap();
+    let delta_scope = DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
 
     engine
-        .store_deltas(name, date, &switch_sports)
+        .store_deltas(name, &delta_scope, &switch_sports)
         .await
         .unwrap();
 
@@ -85,7 +85,7 @@ async fn main() {
             FieldValue::String(Sport::Basketball.as_string()),
         ))
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_scope(QueryScope::date(
+        .with_scope(DeltaScope::date(
             Date::from_calendar_date(2024, Month::January, 1).unwrap(),
         ));
 

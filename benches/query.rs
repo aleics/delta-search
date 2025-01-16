@@ -11,7 +11,7 @@ use delta_search::fixtures::{
     Sport,
 };
 use delta_search::query::{
-    CompositeFilter, OptionsQueryExecution, Pagination, QueryExecution, QueryScope, Sort,
+    CompositeFilter, DeltaScope, OptionsQueryExecution, Pagination, QueryExecution, Sort,
     SortDirection,
 };
 use delta_search::Engine;
@@ -108,14 +108,18 @@ fn bench_apply_deltas(b: &mut Bencher) {
     deltas.extend(decrease_score_deltas(&PLAYERS, COUNT));
     deltas.extend(switch_sports_deltas(&PLAYERS, COUNT));
 
+    let scope = DeltaScope::date(*DATE);
+
     tokio_test::block_on(async {
-        ENGINE.store_deltas(&NAME, *DATE, &deltas).await.unwrap();
+        ENGINE.store_deltas(&NAME, &scope, &deltas).await.unwrap();
     });
+
+    let scope = DeltaScope::date(DATE.next_day().unwrap());
 
     b.iter(move || {
         tokio_test::block_on(async {
             let query = QueryExecution::new()
-                .with_scope(QueryScope::date(DATE.next_day().unwrap()))
+                .with_scope(scope)
                 .with_pagination(*PAGINATION);
 
             ENGINE.query(&NAME, query).await.unwrap();
