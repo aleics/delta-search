@@ -83,11 +83,7 @@ impl App {
             deltas.push(delta_input.map_delta_change()?);
         }
 
-        let date = parse_date(&scope.date).map_err(|_| AppError::InvalidRequest {
-            message: "Date format is invalid. Only ISO 8601 is supported.".to_string(),
-        })?;
-
-        let scope = DeltaScope::new(scope.context, date);
+        let scope = scope.map_delta_scope()?;
 
         engine
             .store_deltas(name, &scope, deltas.as_slice())
@@ -141,6 +137,10 @@ impl App {
                 )
             })
             .unwrap_or(Pagination::new(DEFAULT_START_PAGE, DEFAULT_PAGE_SIZE));
+
+        if let Some(scope) = input.scope {
+            execution = execution.with_scope(scope.map_delta_scope()?);
+        }
 
         Ok(execution.with_pagination(pagination))
     }
@@ -334,6 +334,16 @@ struct DeltaScopeInput {
     date: String,
 }
 
+impl DeltaScopeInput {
+    fn map_delta_scope(self) -> Result<DeltaScope, AppError> {
+        let date = parse_date(&self.date).map_err(|_| AppError::InvalidRequest {
+            message: "Date format is invalid. Only ISO 8601 is supported.".to_string(),
+        })?;
+
+        Ok(DeltaScope::new(self.context, date))
+    }
+}
+
 async fn bulk_add_deltas(
     State(search): State<App>,
     Path(name): Path<String>,
@@ -383,6 +393,7 @@ struct QueryIndexInput {
     filter: Option<String>,
     sort: Option<SortInput>,
     page: Option<PageInput>,
+    scope: Option<DeltaScopeInput>,
 }
 
 #[derive(Deserialize)]

@@ -29,6 +29,9 @@ mod integration_tests {
 
         // adds deltas
         adds_deltas(entity_name).await;
+
+        // executes query with deltas
+        executes_query_with_deltas(entity_name).await;
     }
 
     async fn create_entity(name: &str) {
@@ -243,6 +246,50 @@ mod integration_tests {
 
         // then
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn executes_query_with_deltas(name: &str) {
+        // given
+        let payload = r#"{
+            "filter": "score < 7",
+            "scope": {
+                "context": 0,
+                "date": "2020-01-01"
+            }
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"{
+                    "data": [
+                        {
+                            "id": 1,
+                            "fields": {
+                                "active": true,
+                                "birth_date": "1987-06-24",
+                                "name": "Lionel Messi",
+                                "score": 6.0,
+                                "sport": "Football"
+                            }
+                        }
+                    ]
+                }"#
+            )
+        );
     }
 
     fn normalize(input: &str) -> String {
