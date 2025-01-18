@@ -9,13 +9,17 @@ use axum::routing::{get, post, put};
 use axum::{response::Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use time::format_description::well_known::Iso8601;
+use time::Date;
 use tokio::sync::RwLock;
 
-use delta_search::data::{DataItem, DataItemFieldsExternal, DataItemId};
+use delta_search::data::{
+    DataItem, DataItemFieldsExternal, DataItemId, FieldValue, FieldValueExternal,
+};
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{
-    FilterOption, FilterParser, OptionsQueryExecution, Pagination, QueryExecution, Sort,
-    SortDirection,
+    DeltaChange, DeltaScope, FilterOption, FilterParser, OptionsQueryExecution, Pagination,
+    QueryExecution, Sort, SortDirection,
 };
 use delta_search::storage::CreateFieldIndex;
 use delta_search::Engine;
@@ -62,6 +66,34 @@ impl App {
             .await
             .inspect_err(|err| error!("Could not add items: {}", err))
             .map_err(|_| anyhow!("Could not add items for entity `{}`", name))?;
+
+        Ok(())
+    }
+
+    async fn add_deltas(
+        &self,
+        name: &str,
+        scope: DeltaScopeInput,
+        deltas_input: Vec<DeltaChangeInput>,
+    ) -> Result<(), AppError> {
+        let engine = self.inner.read().await;
+
+        let mut deltas = Vec::new();
+        for delta_input in deltas_input {
+            deltas.push(delta_input.map_delta_change()?);
+        }
+
+        let date = parse_date(&scope.date).map_err(|_| AppError::InvalidRequest {
+            message: "Date format is invalid. Only ISO 8601 is supported.".to_string(),
+        })?;
+
+        let scope = DeltaScope::new(scope.context, date);
+
+        engine
+            .store_deltas(name, &scope, deltas.as_slice())
+            .await
+            .inspect_err(|err| error!("Could not store deltas: {}", err))
+            .map_err(|_| anyhow!("Could not store deltas for entity `{}`", name))?;
 
         Ok(())
     }
@@ -148,6 +180,8 @@ impl App {
 enum AppError {
     #[error("filter query is not valid")]
     InvalidFilterQuery,
+    #[error("request is not valid")]
+    InvalidRequest { message: String },
     #[error(transparent)]
     ServerError(#[from] anyhow::Error),
 }
@@ -160,6 +194,10 @@ impl IntoResponse for AppError {
                 .body(Body::new(
                     "Filter query is invalid or could not be parsed.".to_string(),
                 ))
+                .unwrap(),
+            AppError::InvalidRequest { message } => Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::new(format!("Invalid request: \"{}\"", message)))
                 .unwrap(),
             AppError::ServerError(err) => Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -180,6 +218,7 @@ async fn main() -> Result<(), AppError> {
         .route("/entities/:entity_name", post(create_entity))
         // Storage endpoints
         .route("/data/:entity_name", put(bulk_upsert_entity))
+        .route("/deltas/:entity_name", post(bulk_add_deltas))
         // Index endpoints
         .route("/indices/:entity_name", put(create_index))
         // Search endpoints
@@ -203,11 +242,13 @@ async fn create_entity(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BulkUpsertEntity {
     data: Vec<DataItemExternal>,
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DataItemExternal {
     id: DataItemId,
     fields: DataItemFieldsExternal,
@@ -228,6 +269,77 @@ async fn bulk_upsert_entity(
     Json(input): Json<BulkUpsertEntity>,
 ) -> Result<Json<()>, AppError> {
     search.add_items(&name, input.data).await?;
+    Ok(Json(()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkStoreDeltas {
+    scope: DeltaScopeInput,
+    deltas: Vec<DeltaChangeInput>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeltaChangeInput {
+    id: DataItemId,
+    field_name: String,
+    before: FieldValueExternal,
+    after: FieldValueExternal,
+}
+
+impl DeltaChangeInput {
+    fn map_delta_change(self) -> Result<DeltaChange, AppError> {
+        let before = DeltaChangeInput::map_field(&self.field_name, self.before)?;
+        let after = DeltaChangeInput::map_field(&self.field_name, self.after)?;
+
+        Ok(DeltaChange {
+            id: self.id,
+            field_name: self.field_name,
+            before,
+            after,
+        })
+    }
+
+    fn map_field(name: &String, value: FieldValueExternal) -> Result<FieldValue, AppError> {
+        match value {
+            FieldValueExternal::Bool(value) => Ok(FieldValue::Bool(value)),
+            FieldValueExternal::Integer(value) => Ok(FieldValue::Integer(value)),
+            FieldValueExternal::String(value) => Ok(FieldValue::String(value)),
+            FieldValueExternal::Decimal(value) => Ok(FieldValue::dec(value)),
+            FieldValueExternal::Seq(seq) => {
+                let mut values = Vec::new();
+
+                for value in seq {
+                    values.push(DeltaChangeInput::map_field(name, value)?);
+                }
+
+                Ok(FieldValue::Array(values))
+            }
+            FieldValueExternal::Map(_) => Err(AppError::InvalidRequest {
+                message: format!("Delta field value is invalid for field name {}. Only literals and arrays are allowed.", name),
+            }),
+        }
+    }
+}
+
+fn parse_date(string: &str) -> Result<Date, time::error::Parse> {
+    Date::parse(string, &Iso8601::DEFAULT)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeltaScopeInput {
+    context: Option<u64>,
+    date: String,
+}
+
+async fn bulk_add_deltas(
+    State(search): State<App>,
+    Path(name): Path<String>,
+    Json(input): Json<BulkStoreDeltas>,
+) -> Result<Json<()>, AppError> {
+    search.add_deltas(&name, input.scope, input.deltas).await?;
     Ok(Json(()))
 }
 

@@ -26,6 +26,9 @@ mod integration_tests {
 
         // executes query
         executes_query(entity_name).await;
+
+        // adds deltas
+        adds_deltas(entity_name).await;
     }
 
     async fn create_entity(name: &str) {
@@ -210,6 +213,36 @@ mod integration_tests {
                 }"#
             )
         );
+    }
+
+    async fn adds_deltas(name: &str) {
+        // given
+        let payload = r#"{
+            "scope": {
+                "context": 0,
+                "date": "2020-01-01"
+            },
+            "deltas": [
+                {
+                    "id": 1,
+                    "fieldName": "score",
+                    "before": 9.5,
+                    "after": 6
+                }
+            ]
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/deltas/{}", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     fn normalize(input: &str) -> String {

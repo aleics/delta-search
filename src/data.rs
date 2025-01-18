@@ -5,6 +5,7 @@ use ordered_float::OrderedFloat;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use time::format_description::well_known::Iso8601;
 use time::{Date, OffsetDateTime, Time};
 
 pub(crate) fn date_to_timestamp(date: Date) -> i64 {
@@ -15,6 +16,10 @@ pub(crate) fn timestamp_to_date(timestamp: i64) -> Date {
     OffsetDateTime::from_unix_timestamp(timestamp)
         .expect("Could not parse timestamp as date time")
         .date()
+}
+
+pub(crate) fn parse_date(string: &str) -> Result<Date, time::error::Parse> {
+    Date::parse(string, &Iso8601::DEFAULT)
 }
 
 pub type DataItemId = u64;
@@ -189,7 +194,7 @@ impl<'de> Deserialize<'de> for DataItemFieldsExternal {
                 // Read the values as `InputFieldValue`, so that inner maps are flatten into a single key-value map
                 // using a path structure for the flattened keys.
                 while let Some((key, input_value)) =
-                    map.next_entry::<String, Option<ExternalFieldValue>>()?
+                    map.next_entry::<String, Option<FieldValueExternal>>()?
                 {
                     let field_values = input_value
                         .map(|value| value.flatten(&key))
@@ -222,38 +227,38 @@ impl Serialize for DataItemFieldsExternal {
 /// complex key-value maps are flattened into a single level.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(untagged)]
-enum ExternalFieldValue {
+pub enum FieldValueExternal {
     Bool(bool),
     Integer(u64),
     String(String),
     Decimal(f64),
-    Map(HashMap<String, ExternalFieldValue>),
-    Seq(Vec<ExternalFieldValue>),
+    Map(HashMap<String, FieldValueExternal>),
+    Seq(Vec<FieldValueExternal>),
 }
 
-impl ExternalFieldValue {
+impl FieldValueExternal {
     fn flatten(self, key: &String) -> Vec<(String, FieldValue)> {
         let mut values = Vec::new();
 
         match self {
-            ExternalFieldValue::Bool(value) => values.push((key.clone(), FieldValue::Bool(value))),
-            ExternalFieldValue::Integer(value) => {
+            FieldValueExternal::Bool(value) => values.push((key.clone(), FieldValue::Bool(value))),
+            FieldValueExternal::Integer(value) => {
                 values.push((key.clone(), FieldValue::Integer(value)))
             }
-            ExternalFieldValue::String(value) => {
+            FieldValueExternal::String(value) => {
                 values.push((key.clone(), FieldValue::String(value)))
             }
-            ExternalFieldValue::Decimal(value) => {
+            FieldValueExternal::Decimal(value) => {
                 values.push((key.clone(), FieldValue::Decimal(OrderedFloat(value))))
             }
-            ExternalFieldValue::Map(map) => {
+            FieldValueExternal::Map(map) => {
                 // Call recursively flatten for the inner maps and append a level to the keys
                 for (inner_key, inner_value) in map {
                     let key = format!("{}.{}", key, inner_key);
                     values.append(&mut inner_value.flatten(&key));
                 }
             }
-            ExternalFieldValue::Seq(seq) => {
+            FieldValueExternal::Seq(seq) => {
                 // Call recursively flatten for each element in the sequence and append a level
                 // to the keys
                 let mut inner_values: HashMap<String, Vec<FieldValue>> =
@@ -282,14 +287,14 @@ impl ExternalFieldValue {
     }
 }
 
-fn as_external(field: &FieldValue) -> ExternalFieldValue {
+fn as_external(field: &FieldValue) -> FieldValueExternal {
     match field {
-        FieldValue::Bool(value) => ExternalFieldValue::Bool(*value),
-        FieldValue::Integer(value) => ExternalFieldValue::Integer(*value),
-        FieldValue::String(value) => ExternalFieldValue::String(value.clone()),
-        FieldValue::Decimal(value) => ExternalFieldValue::Decimal(value.into_inner()),
+        FieldValue::Bool(value) => FieldValueExternal::Bool(*value),
+        FieldValue::Integer(value) => FieldValueExternal::Integer(*value),
+        FieldValue::String(value) => FieldValueExternal::String(value.clone()),
+        FieldValue::Decimal(value) => FieldValueExternal::Decimal(value.into_inner()),
         FieldValue::Array(value) => {
-            ExternalFieldValue::Seq(value.iter().map(as_external).collect())
+            FieldValueExternal::Seq(value.iter().map(as_external).collect())
         }
     }
 }

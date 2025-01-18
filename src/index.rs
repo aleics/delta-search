@@ -3,15 +3,13 @@ use std::iter::FromIterator;
 use std::ops::Bound;
 use std::panic;
 
+use crate::data::{date_to_timestamp, parse_date, timestamp_to_date, FieldValue};
+use crate::query::{FilterOperation, FilterResult, SortDirection};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::{MultiOps, RoaringBitmap};
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Iso8601;
-use time::Date;
-
-use crate::data::{date_to_timestamp, timestamp_to_date, FieldValue};
-use crate::query::{FilterOperation, FilterResult, SortDirection};
 
 #[derive(Clone, Debug)]
 pub enum TypeDescriptor {
@@ -368,7 +366,7 @@ impl DateIndex {
     fn parse_value(value: &FieldValue) -> Option<i64> {
         match value {
             FieldValue::String(string) => {
-                let date = Date::parse(string, &Iso8601::DEFAULT)
+                let date = parse_date(string)
                     .unwrap_or_else(|err| panic!("Date could not be parsed: {}", err));
 
                 Some(date_to_timestamp(date))

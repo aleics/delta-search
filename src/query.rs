@@ -30,6 +30,10 @@ pub struct DeltaScope {
 }
 
 impl DeltaScope {
+    pub fn new(context: Option<u64>, date: Date) -> Self {
+        Self { context, date }
+    }
+
     pub fn date(date: Date) -> Self {
         DeltaScope {
             context: None,
