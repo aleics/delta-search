@@ -66,13 +66,18 @@ impl App {
         Ok(())
     }
 
-    async fn query(&self, name: &str, input: QueryIndexInput) -> Result<Vec<DataItem>, AppError> {
+    async fn query(
+        &self,
+        name: &str,
+        input: QueryIndexInput,
+    ) -> Result<Vec<DataItemExternal>, AppError> {
         let execution = Self::build_query_execution(input)?;
 
         let engine = self.inner.read().await;
         engine
             .query(name, execution)
             .await
+            .map(|items| items.into_iter().map(DataItemExternal::from_item).collect())
             .inspect_err(|err| error!("Query could not be executed: {}", err))
             .map_err(|_| anyhow!("Query for entity `{}` could not be executed", name).into())
     }
@@ -207,6 +212,14 @@ struct DataItemExternal {
     id: DataItemId,
     fields: DataItemFieldsExternal,
 }
+
+impl DataItemExternal {
+    fn from_item(item: DataItem) -> Self {
+        DataItemExternal {
+            id: item.id,
+            fields: DataItemFieldsExternal::new(item.fields),
+        }
+    }
 }
 
 async fn bulk_upsert_entity(
@@ -284,7 +297,7 @@ struct PageInput {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryResponse {
-    data: Vec<DataItem>,
+    data: Vec<DataItemExternal>,
 }
 
 async fn query(

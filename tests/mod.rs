@@ -179,61 +179,31 @@ mod integration_tests {
                         {
                             "id": 1,
                             "fields": {
-                                "active": {
-                                    "Bool": true
-                                },
-                                "birth_date": {
-                                    "String": "1987-06-24"
-                                },
-                                "name": {
-                                    "String": "Lionel Messi"
-                                },
-                                "score": {
-                                    "Decimal": 9.5
-                                },
-                                "sport": {
-                                    "String": "Football"
-                                }
+                                "active": true,
+                                "birth_date": "1987-06-24",
+                                "name": "Lionel Messi",
+                                "score": 9.5,
+                                "sport": "Football"
                             }
                         },
                         {
                             "id": 0,
                             "fields": {
-                                "active": {
-                                    "Bool": false
-                                },
-                                "birth_date": {
-                                    "String": "1963-02-17"
-                                },
-                                "name": {
-                                    "String": "Michael Jordan"
-                                },
-                                "score": {
-                                    "Integer": 9
-                                },
-                                "sport": {
-                                    "String": "Basketball"
-                                }
+                                "active": false,
+                                "birth_date": "1963-02-17",
+                                "name": "Michael Jordan",
+                                "score": 9,
+                                "sport": "Basketball"
                             }
                         },
                         {
                             "id": 2,
                             "fields": {
-                                "active": {
-                                    "Bool": true
-                                },
-                                "birth_date": {
-                                    "String": "1985-02-05"
-                                },
-                                "name": {
-                                    "String": "Cristiano Ronaldo"
-                                },
-                                "score": {
-                                    "Decimal": 8.7
-                                },
-                                "sport": {
-                                    "String": "Football"
-                                }
+                                "active": true,
+                                "birth_date": "1985-02-05",
+                                "name": "Cristiano Ronaldo",
+                                "score": 8.7,
+                                "sport": "Football"
                             }
                         }
                     ]
