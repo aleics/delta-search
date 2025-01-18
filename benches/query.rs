@@ -114,10 +114,10 @@ fn bench_apply_deltas(b: &mut Bencher) {
         ENGINE.store_deltas(&NAME, &scope, &deltas).await.unwrap();
     });
 
-    let scope = DeltaScope::date(DATE.next_day().unwrap());
-
     b.iter(move || {
         tokio_test::block_on(async {
+            let scope = DeltaScope::date(DATE.next_day().unwrap());
+
             let query = QueryExecution::new()
                 .with_scope(scope)
                 .with_pagination(*PAGINATION);
