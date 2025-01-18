@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Display, Formatter};
 
-use num_traits::cast::FromPrimitive;
 use ordered_float::OrderedFloat;
-use serde::de::{Error, MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::{MapAccess, Visitor};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use time::{Date, OffsetDateTime, Time};
 
 pub(crate) fn date_to_timestamp(date: Date) -> i64 {
@@ -31,26 +31,6 @@ impl DataItem {
     /// Create a new item with a given identifier and a set of fields.
     pub fn new(id: DataItemId, fields: BTreeMap<String, FieldValue>) -> Self {
         DataItem { id, fields }
-    }
-
-    /// Creates a new `DataItem` by reading the `input` and identifying the field
-    /// used as identifier.
-    pub fn from_input(id_field_name: &str, input: DataItemFieldsInput) -> Self {
-        let id = input
-            .inner
-            .get(id_field_name)
-            .and_then(|field| field.as_integer().copied())
-            .unwrap_or_else(|| {
-                panic!(
-                    "Field \"{}\" not found in input data item or value type can't be used as ID.",
-                    id_field_name
-                )
-            });
-
-        DataItem {
-            id,
-            fields: input.inner,
-        }
     }
 }
 
@@ -168,83 +148,112 @@ impl Display for FieldValue {
 /// input data items. A custom deserializer is used to process the data in a
 /// way that it's compatible with `DataItem` and the inner's storage logic.
 #[derive(Default, Debug, PartialEq)]
-pub struct DataItemFieldsInput {
+pub struct DataItemFieldsExternal {
     pub inner: BTreeMap<String, FieldValue>,
 }
 
-impl DataItemFieldsInput {
-    fn new(inner: BTreeMap<String, FieldValue>) -> Self {
-        DataItemFieldsInput { inner }
+impl DataItemFieldsExternal {
+    pub fn new(inner: BTreeMap<String, FieldValue>) -> Self {
+        DataItemFieldsExternal { inner }
     }
 
     fn empty() -> Self {
-        DataItemFieldsInput {
+        DataItemFieldsExternal {
             inner: BTreeMap::default(),
         }
     }
 }
 
-struct InputDataItemVisitor;
-
-impl<'de> Visitor<'de> for InputDataItemVisitor {
-    type Value = DataItemFieldsInput;
-
-    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
-        formatter.write_str(
-            "a key-value map with supported field values. At the time being, only string, numbers and dates are supported."
-        )
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut item = DataItemFieldsInput::empty();
-
-        // Read the values as `InputFieldValue`, so that inner maps are flatten into a single key-value map
-        // using a path structure for the flattened keys.
-        while let Some((key, input_value)) = map.next_entry::<String, Option<InputFieldValue>>()? {
-            let field_values = input_value
-                .map(|value| value.flatten(&key))
-                .unwrap_or_default();
-            item.inner.extend(field_values);
-        }
-
-        Ok(item)
-    }
-}
-
-impl<'de> Deserialize<'de> for DataItemFieldsInput {
+impl<'de> Deserialize<'de> for DataItemFieldsExternal {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_map(InputDataItemVisitor)
+        struct ExternalDataItemVisitor;
+
+        impl<'de> Visitor<'de> for ExternalDataItemVisitor {
+            type Value = DataItemFieldsExternal;
+
+            fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a key-value map with supported field values. At the time being, only string, numbers and dates are supported."
+                )
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut item = DataItemFieldsExternal::empty();
+
+                // Read the values as `InputFieldValue`, so that inner maps are flatten into a single key-value map
+                // using a path structure for the flattened keys.
+                while let Some((key, input_value)) =
+                    map.next_entry::<String, Option<ExternalFieldValue>>()?
+                {
+                    let field_values = input_value
+                        .map(|value| value.flatten(&key))
+                        .unwrap_or_default();
+                    item.inner.extend(field_values);
+                }
+
+                Ok(item)
+            }
+        }
+
+        deserializer.deserialize_map(ExternalDataItemVisitor)
+    }
+}
+
+impl Serialize for DataItemFieldsExternal {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.inner.len()))?;
+        for (key, value) in &self.inner {
+            map.serialize_entry(key, &as_external(value))?;
+        }
+        map.end()
     }
 }
 
 /// An intermediate structure used while deserializing input data so that
 /// complex key-value maps are flattened into a single level.
-enum InputFieldValue {
-    Literal(FieldValue),
-    Map(HashMap<String, InputFieldValue>),
-    Seq(Vec<InputFieldValue>),
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(untagged)]
+enum ExternalFieldValue {
+    Bool(bool),
+    Integer(u64),
+    String(String),
+    Decimal(f64),
+    Map(HashMap<String, ExternalFieldValue>),
+    Seq(Vec<ExternalFieldValue>),
 }
 
-impl InputFieldValue {
+impl ExternalFieldValue {
     fn flatten(self, key: &String) -> Vec<(String, FieldValue)> {
         let mut values = Vec::new();
 
         match self {
-            InputFieldValue::Literal(value) => values.push((key.clone(), value)),
-            InputFieldValue::Map(map) => {
+            ExternalFieldValue::Bool(value) => values.push((key.clone(), FieldValue::Bool(value))),
+            ExternalFieldValue::Integer(value) => {
+                values.push((key.clone(), FieldValue::Integer(value)))
+            }
+            ExternalFieldValue::String(value) => {
+                values.push((key.clone(), FieldValue::String(value)))
+            }
+            ExternalFieldValue::Decimal(value) => {
+                values.push((key.clone(), FieldValue::Decimal(OrderedFloat(value))))
+            }
+            ExternalFieldValue::Map(map) => {
                 // Call recursively flatten for the inner maps and append a level to the keys
                 for (inner_key, inner_value) in map {
                     let key = format!("{}.{}", key, inner_key);
                     values.append(&mut inner_value.flatten(&key));
                 }
             }
-            InputFieldValue::Seq(seq) => {
+            ExternalFieldValue::Seq(seq) => {
                 // Call recursively flatten for each element in the sequence and append a level
                 // to the keys
                 let mut inner_values: HashMap<String, Vec<FieldValue>> =
@@ -273,173 +282,15 @@ impl InputFieldValue {
     }
 }
 
-struct InputFieldValueVisitor;
-
-impl<'de> Visitor<'de> for InputFieldValueVisitor {
-    type Value = InputFieldValue;
-
-    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
-        formatter.write_str(
-            "a supported field value. At the time being, only string, numbers and dates are supported."
-        )
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        Ok(InputFieldValue::Literal(FieldValue::Bool(value)))
-    }
-
-    fn visit_i8<E>(self, v: i8) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::Decimal(OrderedFloat(
-            number,
-        ))))
-    }
-
-    fn visit_i16<E>(self, v: i16) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::Decimal(OrderedFloat(
-            number,
-        ))))
-    }
-
-    fn visit_i32<E>(self, v: i32) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::Decimal(OrderedFloat(
-            number,
-        ))))
-    }
-
-    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from_i64(v).unwrap_or(0.0);
-        Ok(InputFieldValue::Literal(FieldValue::Decimal(OrderedFloat(
-            number,
-        ))))
-    }
-
-    fn visit_i128<E>(self, v: i128) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from_i128(v).unwrap_or(0.0);
-        Ok(InputFieldValue::Literal(FieldValue::Decimal(OrderedFloat(
-            number,
-        ))))
-    }
-
-    fn visit_u8<E>(self, v: u8) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = u64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::int(number)))
-    }
-
-    fn visit_u16<E>(self, v: u16) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = u64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::int(number)))
-    }
-
-    fn visit_u32<E>(self, v: u32) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = u64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::int(number)))
-    }
-
-    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        Ok(InputFieldValue::Literal(FieldValue::int(v)))
-    }
-
-    fn visit_f32<E>(self, v: f32) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let number = f64::from(v);
-        Ok(InputFieldValue::Literal(FieldValue::dec(number)))
-    }
-
-    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        Ok(InputFieldValue::Literal(FieldValue::dec(v)))
-    }
-
-    fn visit_char<E>(self, v: char) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        let string = v.to_string();
-        Ok(InputFieldValue::Literal(FieldValue::String(string)))
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        Ok(InputFieldValue::Literal(FieldValue::str(v)))
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-    where
-        E: Error,
-    {
-        Ok(InputFieldValue::Literal(FieldValue::String(v)))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-
-        while let Some(element) = seq.next_element().unwrap() {
-            values.push(element);
+fn as_external(field: &FieldValue) -> ExternalFieldValue {
+    match field {
+        FieldValue::Bool(value) => ExternalFieldValue::Bool(*value),
+        FieldValue::Integer(value) => ExternalFieldValue::Integer(*value),
+        FieldValue::String(value) => ExternalFieldValue::String(value.clone()),
+        FieldValue::Decimal(value) => ExternalFieldValue::Decimal(value.into_inner()),
+        FieldValue::Array(value) => {
+            ExternalFieldValue::Seq(value.iter().map(as_external).collect())
         }
-
-        Ok(InputFieldValue::Seq(values))
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut values = HashMap::with_capacity(map.size_hint().unwrap_or(0));
-        while let Some((key, value)) = map.next_entry()? {
-            values.insert(key, value);
-        }
-        Ok(InputFieldValue::Map(values))
-    }
-}
-
-impl<'de> Deserialize<'de> for InputFieldValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_any(InputFieldValueVisitor)
     }
 }
 
@@ -447,7 +298,7 @@ impl<'de> Deserialize<'de> for InputFieldValue {
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::data::{DataItemFieldsInput, FieldValue};
+    use crate::data::{DataItemFieldsExternal, FieldValue};
 
     #[test]
     fn deserializes() {
@@ -493,12 +344,12 @@ mod tests {
         }"#;
 
         // when
-        let data: DataItemFieldsInput = serde_json::from_str(input).unwrap();
+        let data: DataItemFieldsExternal = serde_json::from_str(input).unwrap();
 
         // then
         assert_eq!(
             data,
-            DataItemFieldsInput::new(BTreeMap::from([
+            DataItemFieldsExternal::new(BTreeMap::from([
                 (
                     "name".to_string(),
                     FieldValue::String("Elephant".to_string())
@@ -534,5 +385,74 @@ mod tests {
                 )
             ]))
         )
+    }
+
+    #[test]
+    fn serializes() {
+        // given
+        let input = DataItemFieldsExternal::new(BTreeMap::from([
+            (
+                "name".to_string(),
+                FieldValue::String("Elephant".to_string()),
+            ),
+            ("type".to_string(), FieldValue::String("animal".to_string())),
+            ("count_int".to_string(), FieldValue::int(415000)),
+            ("count_float".to_string(), FieldValue::dec(415000.0)),
+            ("carnivore".to_string(), FieldValue::Bool(false)),
+            (
+                "family.name".to_string(),
+                FieldValue::String("Elephantidae".to_string()),
+            ),
+            (
+                "family.characteristics.teeth_count".to_string(),
+                FieldValue::int(26),
+            ),
+            (
+                "regions.continent".to_string(),
+                FieldValue::array([FieldValue::str("Asia"), FieldValue::str("Africa")]),
+            ),
+            (
+                "regions.country".to_string(),
+                FieldValue::array([FieldValue::str("Cambodia"), FieldValue::str("Tanzania")]),
+            ),
+            (
+                "regions.cities.name".to_string(),
+                FieldValue::array([
+                    FieldValue::str("Phnom Penh"),
+                    FieldValue::str("Siem Reap"),
+                    FieldValue::str("Dodoma"),
+                    FieldValue::str("Mwanza"),
+                ]),
+            ),
+        ]));
+
+        // when
+        let output = serde_json::to_string(&input).unwrap();
+
+        // then
+        assert_eq!(
+            normalize(&output),
+            normalize(
+                r#"{
+                  "carnivore": false,
+                  "count_float": 415000.0,
+                  "count_int": 415000,
+                  "family.characteristics.teeth_count": 26,
+                  "family.name": "Elephantidae",
+                  "name": "Elephant",
+                  "regions.cities.name": ["PhnomPenh", "SiemReap", "Dodoma", "Mwanza"],
+                  "regions.continent": ["Asia", "Africa"],
+                  "regions.country": ["Cambodia", "Tanzania"],
+                  "type": "animal"
+                }"#
+            )
+        )
+    }
+
+    fn normalize(input: &str) -> String {
+        let mut string = input.to_string();
+        string.retain(|c| !c.is_whitespace());
+
+        string
     }
 }

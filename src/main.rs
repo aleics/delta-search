@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
-use delta_search::data::{DataItem, DataItemFieldsInput, DataItemId};
+use delta_search::data::{DataItem, DataItemFieldsExternal, DataItemId};
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{
     FilterOption, FilterParser, OptionsQueryExecution, Pagination, QueryExecution, Sort,
@@ -50,7 +50,7 @@ impl App {
         Ok(())
     }
 
-    async fn add_items(&self, name: &str, items: Vec<DataItemInput>) -> Result<(), AppError> {
+    async fn add_items(&self, name: &str, items: Vec<DataItemExternal>) -> Result<(), AppError> {
         let items: Vec<DataItem> = items
             .into_iter()
             .map(|input_item| DataItem::new(input_item.id, input_item.fields.inner))
@@ -199,13 +199,14 @@ async fn create_entity(
 
 #[derive(Deserialize)]
 struct BulkUpsertEntity {
-    data: Vec<DataItemInput>,
+    data: Vec<DataItemExternal>,
 }
 
-#[derive(Deserialize)]
-struct DataItemInput {
+#[derive(Serialize, Deserialize)]
+struct DataItemExternal {
     id: DataItemId,
-    fields: DataItemFieldsInput,
+    fields: DataItemFieldsExternal,
+}
 }
 
 async fn bulk_upsert_entity(
