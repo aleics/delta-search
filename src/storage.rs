@@ -4,6 +4,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Bound;
 use std::path::Path;
 
+use heed::byteorder::BigEndian;
 use heed::types::*;
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
@@ -124,14 +125,16 @@ impl StoredDelta {
     }
 }
 
+type BEU64 = U64<BigEndian>;
+
 /// Storage in disk using `LMDB` for the data and their related indices.
 pub struct EntityStorage {
     pub(crate) id: String,
     env: Env,
-    data: Database<OwnedType<DataItemId>, SerdeBincode<DataItem>>,
+    data: Database<BEU64, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
-    deltas: Database<OwnedType<u64>, SerdeBincode<BTreeMap<i64, HashMap<String, StoredDelta>>>>,
+    deltas: Database<BEU64, SerdeBincode<BTreeMap<i64, HashMap<String, StoredDelta>>>>,
     index_descriptors: HashMap<String, TypeDescriptor>,
 }
 
@@ -144,26 +147,32 @@ impl EntityStorage {
 
         std::fs::create_dir_all(&path)?;
 
-        let env = EnvOpenOptions::new()
-            .map_size(100 * 1024 * 1024) // 100 MB max size
-            .max_dbs(3000)
-            .open(path)?;
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .map_size(100 * 1024 * 1024) // 100 MB max size
+                .max_dbs(3000)
+                .open(path)?
+        };
+
+        let mut txn = env.write_txn()?;
 
         let data = env
-            .create_database(Some(DATA_DB_NAME))
+            .create_database(&mut txn, Some(DATA_DB_NAME))
             .map_err(|_| StorageError::CreateDatabase(DATA_DB_NAME))?;
 
         let indices = env
-            .create_database(Some(INDICES_DB_NAME))
+            .create_database(&mut txn, Some(INDICES_DB_NAME))
             .map_err(|_| StorageError::CreateDatabase(INDICES_DB_NAME))?;
 
         let documents = env
-            .create_database(Some(DOCUMENTS_DB_NAME))
+            .create_database(&mut txn, Some(DOCUMENTS_DB_NAME))
             .map_err(|_| StorageError::CreateDatabase(DOCUMENTS_DB_NAME))?;
 
         let deltas = env
-            .create_database(Some(DELTAS_DB_NAME))
+            .create_database(&mut txn, Some(DELTAS_DB_NAME))
             .map_err(|_| StorageError::CreateDatabase(DELTAS_DB_NAME))?;
+
+        txn.commit()?;
 
         let mut storage = EntityStorage {
             id: name.to_string(),
@@ -367,7 +376,7 @@ impl EntityStorage {
                 index.remove_item(*position);
             }
 
-            entries.put_current(&key, &index).unwrap();
+            unsafe { entries.put_current(&key, &index)? };
         }
 
         drop(entries);

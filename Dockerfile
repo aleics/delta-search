@@ -1,5 +1,5 @@
 # Compile
-FROM rust:1.78 AS compiler
+FROM rust:1.84 AS compiler
 
 WORKDIR /
 

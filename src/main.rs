@@ -215,15 +215,15 @@ async fn main() -> Result<(), AppError> {
     let search_engine = App::init()?;
 
     let app = Router::new()
-        .route("/entities/:entity_name", post(create_entity))
+        .route("/entities/{entity_name}", post(create_entity))
         // Storage endpoints
-        .route("/data/:entity_name", put(bulk_upsert_entity))
-        .route("/deltas/:entity_name", post(bulk_add_deltas))
+        .route("/data/{entity_name}", put(bulk_upsert_entity))
+        .route("/deltas/{entity_name}", post(bulk_add_deltas))
         // Index endpoints
-        .route("/indices/:entity_name", put(create_index))
+        .route("/indices/{entity_name}", put(create_index))
         // Search endpoints
-        .route("/indices/:entity_name/options", get(get_options))
-        .route("/indices/:entity_name/search", post(query))
+        .route("/indices/{entity_name}/options", get(get_options))
+        .route("/indices/{entity_name}/search", post(query))
         .with_state(search_engine);
 
     info!("delta-search is running...");
