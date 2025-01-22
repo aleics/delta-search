@@ -126,3 +126,36 @@ fn bench_apply_deltas(b: &mut Bencher) {
         });
     });
 }
+
+#[bench]
+fn bench_apply_deltas_with_multiple_dates(b: &mut Bencher) {
+    let mut deltas = Vec::new();
+
+    deltas.extend(decrease_score_deltas(&PLAYERS, COUNT));
+    deltas.extend(switch_sports_deltas(&PLAYERS, COUNT));
+
+    let mut date: Date = *DATE;
+
+    tokio_test::block_on(async {
+        for delta_chunk in deltas.chunks(10) {
+            ENGINE
+                .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk)
+                .await
+                .unwrap();
+
+            date = date.next_day().unwrap();
+        }
+    });
+
+    b.iter(move || {
+        tokio_test::block_on(async {
+            let scope = DeltaScope::date(date.next_day().unwrap());
+
+            let query = QueryExecution::new()
+                .with_scope(scope)
+                .with_pagination(*PAGINATION);
+
+            ENGINE.query(&NAME, query).await.unwrap();
+        });
+    });
+}

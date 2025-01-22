@@ -1,16 +1,14 @@
-use std::collections::{BTreeMap, HashMap};
-use std::convert::TryFrom;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::ops::Bound;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 
 use heed::byteorder::BigEndian;
-use heed::types::*;
+use heed::{types::*, BoxedError, BytesDecode, BytesEncode};
 use heed::{Database, Env, EnvOpenOptions, RoTxn};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use time::Date;
 
 use crate::data::{date_to_timestamp, DataItem};
 use crate::index::{Index, TypeDescriptor};
@@ -76,36 +74,6 @@ impl StorageBuilder {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct StoredDeltaScope {
-    context: Option<u64>,
-    timestamp: i64,
-}
-
-impl StoredDeltaScope {
-    pub(crate) fn date(date: Date) -> Self {
-        StoredDeltaScope {
-            context: None,
-            timestamp: date_to_timestamp(date),
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        let mut s = DefaultHasher::new();
-        self.context.hash(&mut s);
-        s.finish()
-    }
-}
-
-impl From<&DeltaScope> for StoredDeltaScope {
-    fn from(value: &DeltaScope) -> Self {
-        StoredDeltaScope {
-            context: value.context,
-            timestamp: date_to_timestamp(value.date),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredDelta {
     affected: RoaringBitmap,
@@ -127,6 +95,79 @@ impl StoredDelta {
 
 type BEU64 = U64<BigEndian>;
 
+#[derive(Debug, PartialEq)]
+struct DeltaKey {
+    context: u64,
+    timestamp: i64,
+}
+
+impl DeltaKey {
+    fn new(context: Option<u32>, timestamp: i64) -> Self {
+        let context = context.map(|context| context as u64 + 1).unwrap_or(0);
+        DeltaKey { context, timestamp }
+    }
+}
+
+struct DeltaKeyCodec;
+
+impl<'a> BytesEncode<'a> for DeltaKeyCodec {
+    type EItem = DeltaKey;
+
+    fn bytes_encode(key: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
+        let context_bytes = key.context.to_be_bytes();
+        let timestamp_bytes = key.timestamp.to_be_bytes();
+
+        let mut output = Vec::new();
+        output.extend_from_slice(&context_bytes);
+        output.extend_from_slice(&timestamp_bytes);
+        Ok(Cow::Owned(output))
+    }
+}
+
+impl<'a> BytesDecode<'a> for DeltaKeyCodec {
+    type DItem = DeltaKey;
+
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
+        let context_start = 0;
+        let context_end = size_of::<u64>();
+        let timestamp_start = context_end;
+        let timestamp_end = context_end + size_of::<i64>();
+
+        let bytes = bytes.to_vec();
+
+        let context = match bytes.get(context_start..context_end) {
+            Some(bytes) => bytes.try_into().map(u64::from_be_bytes).unwrap(),
+            None => return Err("invalid log key: cannot extract context".into()),
+        };
+
+        let timestamp = match bytes.get(timestamp_start..timestamp_end) {
+            Some(bytes) => bytes.try_into().map(i64::from_be_bytes).unwrap(),
+            None => return Err("invalid log key: cannot extract timestamp".into()),
+        };
+
+        Ok(DeltaKey { context, timestamp })
+    }
+}
+
+struct DeltaKeyContextCodec;
+
+impl<'a> BytesEncode<'a> for DeltaKeyContextCodec {
+    type EItem = u64;
+
+    fn bytes_encode(context: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
+        let context_bytes = context.to_be_bytes();
+        Ok(Cow::Owned(context_bytes.to_vec()))
+    }
+}
+
+impl<'a> BytesDecode<'a> for DeltaKeyContextCodec {
+    type DItem = DeltaKey;
+
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
+        DeltaKeyCodec::bytes_decode(bytes)
+    }
+}
+
 /// Storage in disk using `LMDB` for the data and their related indices.
 pub struct EntityStorage {
     pub(crate) id: String,
@@ -134,7 +175,7 @@ pub struct EntityStorage {
     data: Database<BEU64, SerdeBincode<DataItem>>,
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
-    deltas: Database<BEU64, SerdeBincode<BTreeMap<i64, HashMap<String, StoredDelta>>>>,
+    deltas: Database<DeltaKeyCodec, SerdeBincode<HashMap<String, StoredDelta>>>,
     index_descriptors: HashMap<String, TypeDescriptor>,
 }
 
@@ -440,30 +481,39 @@ impl EntityStorage {
         txn: &RoTxn,
         scope: &DeltaScope,
     ) -> Result<HashMap<String, StoredDelta>, StorageError> {
-        let scope = StoredDeltaScope::from(scope);
+        let scope_timestamp = date_to_timestamp(scope.date);
+        let scope_key = DeltaKey::new(scope.context, scope_timestamp);
 
-        let Some(deltas_in_scope) = self.deltas.get(txn, &scope.get_id())? else {
-            return Ok(HashMap::new());
-        };
+        let deltas_by_date = self
+            .deltas
+            // Use the `DeltaKeyContextCodec` to read deltas using only the `context` as a prefix
+            // and iterate over keys ascending (lower timestamp to higher).
+            .remap_key_type::<DeltaKeyContextCodec>()
+            .rev_prefix_iter(txn, &scope_key.context)?;
 
-        let aggregated_deltas = deltas_in_scope
-            .range((Bound::Unbounded, Bound::Included(scope.timestamp)))
-            .fold(
-                HashMap::<String, StoredDelta>::new(),
-                |mut acc, (_, stored_deltas)| {
-                    for (field_name, stored_delta) in stored_deltas {
-                        if let Some(aggregated_delta) = acc.get_mut(field_name) {
-                            aggregated_delta.before.plus(&stored_delta.before);
-                            aggregated_delta.after.plus(&stored_delta.after);
-                            aggregated_delta.affected |= &stored_delta.affected;
-                        } else {
-                            acc.insert(stored_delta.field_name.clone(), stored_delta.clone());
-                        };
+        let mut aggregated_deltas: HashMap<String, StoredDelta> = HashMap::new();
+        for entry in deltas_by_date {
+            let (stored_delta_key, stored_deltas) = entry?;
+
+            // A stored delta is part of the scope, if it occurs the same date or before
+            // the scope's date (stored timestamp is smaller or equal than the scope's timestamp)
+            if stored_delta_key.timestamp <= scope_timestamp {
+                for (field, stored_delta) in stored_deltas {
+                    if let Some(aggregated_delta) = aggregated_deltas.get_mut(&field) {
+                        aggregated_delta.before.plus(&stored_delta.before);
+                        aggregated_delta.after.plus(&stored_delta.after);
+                        aggregated_delta.affected |= &stored_delta.affected;
+                    } else {
+                        aggregated_deltas.insert(field, stored_delta);
                     }
-
-                    acc
-                },
-            );
+                }
+            } else {
+                // Since we are iterating in a sorted manner (lower to higher), once we've reached
+                // a delta with a higher timestamp than the scope's timestamp, the rest is also
+                // not part of the scope.
+                break;
+            }
+        }
 
         Ok(aggregated_deltas)
     }
@@ -544,33 +594,28 @@ impl EntityStorage {
         scope: &DeltaScope,
         deltas: &[DeltaChange],
     ) -> Result<(), StorageError> {
-        let scope = StoredDeltaScope::from(scope);
+        let scope_timestamp = date_to_timestamp(scope.date);
+        let scope_key = DeltaKey::new(scope.context, scope_timestamp);
+
         let mut txn = self.env.write_txn()?;
 
-        let scope_id = scope.get_id();
-        let mut current = self.deltas.get(&txn, &scope_id)?.unwrap_or_default();
-
-        let stored_deltas = current.entry(scope.timestamp).or_default();
+        let mut current = self.deltas.get(&txn, &scope_key)?.unwrap_or_default();
 
         // Iterate over the deltas to create for each field name the before and after index
         for delta in deltas {
-            let type_descriptor = self
-                .index_descriptors
-                .get(&delta.field_name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Could not store delta. Field name \"{}\" is not available in the DB.",
-                        &delta.field_name
-                    )
-                });
+            let stored_delta = current.entry(delta.field_name.clone()).or_insert_with(|| {
+                let type_descriptor = self
+                    .index_descriptors
+                    .get(&delta.field_name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "Could not store delta. Field name \"{}\" is not available in the DB.",
+                            &delta.field_name
+                        )
+                    });
 
-            let stored_delta =
-                stored_deltas
-                    .entry(delta.field_name.clone())
-                    .or_insert(StoredDelta::from_type(
-                        delta.field_name.clone(),
-                        type_descriptor,
-                    ));
+                StoredDelta::from_type(delta.field_name.clone(), type_descriptor)
+            });
 
             let position = id_to_position(delta.id);
 
@@ -579,7 +624,7 @@ impl EntityStorage {
             stored_delta.affected.insert(position);
         }
 
-        self.deltas.put(&mut txn, &scope_id, &current)?;
+        self.deltas.put(&mut txn, &scope_key, &current)?;
 
         txn.commit()?;
 
@@ -628,4 +673,30 @@ pub(crate) struct AffectedData {
 pub struct CreateFieldIndex {
     pub name: String,
     pub descriptor: TypeDescriptor,
+}
+
+#[cfg(test)]
+mod tests {
+    use heed::{BytesDecode, BytesEncode};
+    use lazy_static::lazy_static;
+    use time::{Date, Month};
+
+    use super::{date_to_timestamp, DeltaKey, DeltaKeyCodec};
+
+    lazy_static! {
+        static ref DATE: Date = Date::from_calendar_date(2023, Month::January, 1).unwrap();
+    }
+
+    #[test]
+    fn encodes_decodes_delta_keys() {
+        // given
+        let key = DeltaKey::new(Some(0), date_to_timestamp(*DATE));
+
+        // when
+        let encoded = DeltaKeyCodec::bytes_encode(&key).unwrap();
+        let decoded = DeltaKeyCodec::bytes_decode(&encoded).unwrap();
+
+        // then
+        assert_eq!(key, decoded);
+    }
 }

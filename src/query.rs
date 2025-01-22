@@ -25,12 +25,12 @@ impl FilterOption {
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct DeltaScope {
-    pub(crate) context: Option<u64>,
+    pub(crate) context: Option<u32>,
     pub(crate) date: Date,
 }
 
 impl DeltaScope {
-    pub fn new(context: Option<u64>, date: Date) -> Self {
+    pub fn new(context: Option<u32>, date: Date) -> Self {
         Self { context, date }
     }
 
@@ -41,7 +41,7 @@ impl DeltaScope {
         }
     }
 
-    pub fn context(context: u64, date: Date) -> Self {
+    pub fn context(context: u32, date: Date) -> Self {
         DeltaScope {
             context: Some(context),
             date,

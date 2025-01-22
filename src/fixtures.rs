@@ -270,7 +270,7 @@ impl Player {
 pub struct DecreaseScoreDelta;
 
 impl DecreaseScoreDelta {
-    pub(crate) fn create(id: DataItemId, score: f64) -> DeltaChange {
+    pub fn create(id: DataItemId, score: f64) -> DeltaChange {
         DeltaChange::new(
             id,
             "score".to_string(),

@@ -10,7 +10,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_simple() {
         // given
-        let entity_name = "players";
+        let entity_name = "players::simple";
 
         // creates entity
         create_entity(entity_name).await;
@@ -32,6 +32,27 @@ mod integration_tests {
 
         // executes query with deltas
         executes_query_with_deltas(entity_name).await;
+    }
+
+    #[tokio::test]
+    async fn test_delta_contexts() {
+        // given
+        let entity_name = "players::delta_contexts";
+
+        // creates entity
+        create_entity(entity_name).await;
+
+        // populates data
+        populate_data(entity_name).await;
+
+        // creates index
+        create_index(entity_name).await;
+
+        // adds deltas
+        adds_deltas_different_contexts(entity_name).await;
+
+        // executes query with deltas
+        executes_query_with_deltas_from_multiple_contexts(entity_name).await;
     }
 
     async fn create_entity(name: &str) {
@@ -284,6 +305,150 @@ mod integration_tests {
                                 "name": "Lionel Messi",
                                 "score": 6.0,
                                 "sport": "Football"
+                            }
+                        }
+                    ]
+                }"#
+            )
+        );
+    }
+
+    async fn adds_deltas_different_contexts(name: &str) {
+        // given
+        let payload = r#"{
+            "scope": {
+                "context": 0,
+                "date": "2020-01-01"
+            },
+            "deltas": [
+                {
+                    "id": 1,
+                    "fieldName": "score",
+                    "before": 9.5,
+                    "after": 6
+                }
+            ]
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/deltas/{}", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // given
+        let payload = r#"{
+            "scope": {
+                "context": 1,
+                "date": "2020-01-01"
+            },
+            "deltas": [
+                {
+                    "id": 0,
+                    "fieldName": "score",
+                    "before": 9,
+                    "after": 5
+                }
+            ]
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/deltas/{}", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn executes_query_with_deltas_from_multiple_contexts(name: &str) {
+        // given
+        let payload = r#"{
+            "filter": "score < 7",
+            "scope": {
+                "context": 0,
+                "date": "2020-01-01"
+            }
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"{
+                    "data": [
+                        {
+                            "id": 1,
+                            "fields": {
+                                "active": true,
+                                "birth_date": "1987-06-24",
+                                "name": "Lionel Messi",
+                                "score": 6.0,
+                                "sport": "Football"
+                            }
+                        }
+                    ]
+                }"#
+            )
+        );
+
+        // given
+        let payload = r#"{
+            "filter": "score < 7",
+            "scope": {
+                "context": 1,
+                "date": "2020-01-01"
+            }
+        }"#;
+
+        // when
+        let response = CLIENT
+            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"{
+                    "data": [
+                        {
+                            "id": 0,
+                            "fields": {
+                                "active": false,
+                                "birth_date": "1963-02-17",
+                                "name": "Michael Jordan",
+                                "score": 5.0,
+                                "sport": "Basketball"
                             }
                         }
                     ]

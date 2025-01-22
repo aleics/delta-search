@@ -330,7 +330,7 @@ fn parse_date(string: &str) -> Result<Date, time::error::Parse> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeltaScopeInput {
-    context: Option<u64>,
+    context: Option<u32>,
     date: String,
 }
 
