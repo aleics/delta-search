@@ -452,10 +452,15 @@ impl DeltaChange {
 #[derive(pest_derive::Parser)]
 #[grammar_inline = r#"
     WHITESPACE = _{ " " }
-    NAME_CHAR  = _{ ASCII_ALPHA | "." }
+    NAME_CHAR  = _{ ASCII_ALPHA | "." | "_" }
     name       =  { NAME_CHAR+ }
     number     = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
-    string     =  { "\"" ~ ASCII_ALPHA* ~ "\"" }
+    string     = ${ "\"" ~ char* ~ "\"" }
+    char       = {
+        !("\"" | "\\") ~ ANY
+        | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+        | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+    }
     boolean    =  { "true" | "false" }
     array      =  { "[" ~ "]" | "[" ~ value ~ ("," ~ value)* ~ "]" }
     value      =  { number | string | boolean | array }
@@ -482,6 +487,7 @@ impl FilterParser {
             | Rule::NAME_CHAR
             | Rule::name
             | Rule::number
+            | Rule::char
             | Rule::string
             | Rule::boolean
             | Rule::array
@@ -554,6 +560,7 @@ impl FilterParser {
             Rule::WHITESPACE
             | Rule::NAME_CHAR
             | Rule::name
+            | Rule::char
             | Rule::comparison_operator
             | Rule::logical_operator
             | Rule::statement
@@ -604,7 +611,7 @@ pub enum QueryError {
     Storage(#[from] StorageError),
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum ParseError {
     #[error("query is defined but empty")]
@@ -623,7 +630,40 @@ mod tests {
     use crate::query::{CompositeFilter, FilterParser};
 
     #[test]
-    fn creates_simple_filter() {
+    fn creates_string_filter() {
+        // given
+        let input = "person.name = \"David\"";
+
+        // when
+        let result = FilterParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            CompositeFilter::eq("person.name", FieldValue::str("David"))
+        )
+    }
+
+    #[test]
+    fn creates_date_filter() {
+        // given
+        let input = "person.birth_date < \"2020-01-01\"";
+
+        // when
+        let result = FilterParser::parse_query(input);
+
+        // then
+        assert_eq!(
+            result,
+            Ok(CompositeFilter::lt(
+                "person.birth_date",
+                FieldValue::str("2020-01-01")
+            ))
+        )
+    }
+
+    #[test]
+    fn creates_complex_filter() {
         // given
         let input = "(person.name != \"Michael Jordan\") && (score > 1 || active = true && (person.name.simple = \"Roger\" || score <= 5))";
 
