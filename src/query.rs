@@ -279,6 +279,10 @@ pub enum CompositeFilter {
 }
 
 impl CompositeFilter {
+    pub fn parse(query: &str) -> Result<CompositeFilter, ParseError> {
+        FilterParser::parse_query(query)
+    }
+
     pub fn eq(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
@@ -471,7 +475,7 @@ impl DeltaChange {
     statement = { "("{0, 1} ~ name ~ SPACE_SEPARATOR* ~ comparison_operator ~ value ~ ")"{0, 1} }
     composite = { "("{0, 1} ~ statement ~ logical_operator* ~ composite* ~ ")"{0, 1} }
 "#]
-pub struct FilterParser;
+pub(crate) struct FilterParser;
 
 impl FilterParser {
     pub fn parse_query(input: &str) -> Result<CompositeFilter, ParseError> {

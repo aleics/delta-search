@@ -1,4 +1,4 @@
-use delta_search::data::FieldValue;
+use anyhow::Error;
 use delta_search::fixtures::{
     create_players_storage, cristiano_ronaldo, david, lionel_messi, michael_jordan, roger,
     DecreaseScoreDelta, Sport, SwitchSportsDelta,
@@ -10,7 +10,7 @@ use delta_search::Engine;
 use time::{Date, Month};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Error> {
     println!("Welcome to the simple Player search!");
 
     let michael_jordan = michael_jordan();
@@ -43,10 +43,7 @@ async fn main() {
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
     let query = QueryExecution::new()
-        .with_filter(CompositeFilter::eq(
-            "sport",
-            FieldValue::String(Sport::Basketball.as_string()),
-        ))
+        .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
     let players = engine.query(name, query).await;
 
@@ -56,11 +53,9 @@ async fn main() {
         .query(
             name,
             QueryExecution::new()
-                .with_filter(CompositeFilter::between(
-                    "birth_date",
-                    FieldValue::str("1980-01-01"),
-                    FieldValue::str("1989-12-31"),
-                ))
+                .with_filter(CompositeFilter::parse(
+                    "birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\"",
+                )?)
                 .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
         )
         .await;
@@ -72,7 +67,7 @@ async fn main() {
         SwitchSportsDelta::create(lionel_messi_id, Sport::Football, Sport::Basketball),
     ];
 
-    let delta_scope = DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
+    let delta_scope = DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1)?);
 
     engine
         .store_deltas(name, &delta_scope, &switch_sports)
@@ -80,20 +75,19 @@ async fn main() {
         .unwrap();
 
     let query = QueryExecution::new()
-        .with_filter(CompositeFilter::eq(
-            "sport",
-            FieldValue::String(Sport::Basketball.as_string()),
-        ))
+        .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_scope(DeltaScope::date(
-            Date::from_calendar_date(2024, Month::January, 1).unwrap(),
-        ));
+        .with_scope(DeltaScope::date(Date::from_calendar_date(
+            2024,
+            Month::January,
+            1,
+        )?));
 
-    let players = engine.query(name, query).await;
+    let players = engine.query(name, query).await?;
 
     println!(
         "Basketball players sorted by score after switching sports in 2023:\n{:?}\n",
-        players.unwrap()
+        players
     );
 
     let lower_scores = vec![
@@ -101,44 +95,39 @@ async fn main() {
         DecreaseScoreDelta::create(lionel_messi_id, 9.0),
     ];
 
-    let delta_scope = DeltaScope::context(
-        0,
-        Date::from_calendar_date(2023, Month::January, 1).unwrap(),
-    );
+    let delta_scope = DeltaScope::context(0, Date::from_calendar_date(2023, Month::January, 1)?);
 
     engine
         .store_deltas(name, &delta_scope, &lower_scores)
-        .await
-        .unwrap();
+        .await?;
 
     let query = QueryExecution::new()
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
         .with_scope(DeltaScope::context(
             0,
-            Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            Date::from_calendar_date(2024, Month::January, 1)?,
         ));
 
-    let players = engine.query(name, query).await;
+    let players = engine.query(name, query).await?;
 
     println!(
         "Players sorted by score after decreasing their score by 1:\n{:?}\n",
-        players.unwrap()
+        players
     );
 
-    engine.remove(name, &david_id).await.unwrap();
+    engine.remove(name, &david_id).await?;
 
     let players = engine
         .query(
             name,
-            QueryExecution::new().with_filter(CompositeFilter::eq(
-                "sport",
-                FieldValue::String(Sport::Basketball.as_string()),
-            )),
+            QueryExecution::new().with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
         )
-        .await;
+        .await?;
 
     println!(
         "Players playing basketball after deletion:\n{:?}\n",
-        players.unwrap()
+        players
     );
+
+    Ok(())
 }

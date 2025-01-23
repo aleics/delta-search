@@ -18,7 +18,7 @@ use delta_search::data::{
 };
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{
-    DeltaChange, DeltaScope, FilterOption, FilterParser, OptionsQueryExecution, Pagination,
+    CompositeFilter, DeltaChange, DeltaScope, FilterOption, OptionsQueryExecution, Pagination,
     QueryExecution, Sort, SortDirection,
 };
 use delta_search::storage::CreateFieldIndex;
@@ -115,7 +115,7 @@ impl App {
 
         if let Some(filter) = &input.filter {
             let parsed_filter =
-                FilterParser::parse_query(filter).map_err(|_| AppError::InvalidFilterQuery)?;
+                CompositeFilter::parse(filter).map_err(|_| AppError::InvalidFilterQuery)?;
             execution = execution.with_filter(parsed_filter);
         }
 
