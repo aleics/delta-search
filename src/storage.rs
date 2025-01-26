@@ -176,7 +176,7 @@ pub struct EntityStorage {
     indices: Database<Str, SerdeBincode<Index>>,
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
     deltas: Database<DeltaKeyCodec, SerdeBincode<HashMap<String, StoredDelta>>>,
-    index_descriptors: HashMap<String, TypeDescriptor>,
+    index_descriptors: papaya::HashMap<String, TypeDescriptor>,
 }
 
 impl EntityStorage {
@@ -222,7 +222,7 @@ impl EntityStorage {
             documents,
             data,
             deltas,
-            index_descriptors: HashMap::new(),
+            index_descriptors: Default::default(),
         };
 
         storage.propagate_indices()?;
@@ -240,6 +240,7 @@ impl EntityStorage {
         for entry in entries {
             let (name, index) = entry?;
             self.index_descriptors
+                .pin()
                 .insert(name.to_string(), index.create_descriptor());
         }
 
@@ -253,7 +254,7 @@ impl EntityStorage {
 
     /// Fill the DB with data by clearing the previous one. This is meant for when initialising
     /// the storage and remove any previous data.
-    pub fn carry(&mut self, data: &[DataItem]) -> Result<(), StorageError> {
+    pub fn carry(&self, data: &[DataItem]) -> Result<(), StorageError> {
         self.clear()?;
         self.add_multiple(data)?;
 
@@ -261,13 +262,13 @@ impl EntityStorage {
     }
 
     /// Clears the current storage indices and data.
-    pub fn clear(&mut self) -> Result<(), StorageError> {
+    pub fn clear(&self) -> Result<(), StorageError> {
         let mut txn = self.env.write_txn()?;
 
         self.data.clear(&mut txn)?;
         self.indices.clear(&mut txn)?;
         self.documents.clear(&mut txn)?;
-        self.index_descriptors.clear();
+        self.index_descriptors.pin().clear();
 
         txn.commit()?;
 
@@ -303,7 +304,7 @@ impl EntityStorage {
 
             // Update indices in memory with the item data to reduce (de)serialization overhead
             // if we update index one by one in the DB.
-            for (index_name, index_descriptor) in &self.index_descriptors {
+            for (index_name, index_descriptor) in self.index_descriptors.pin().iter() {
                 let Some(value) = item.fields.get(index_name).cloned() else {
                     continue;
                 };
@@ -343,14 +344,12 @@ impl EntityStorage {
     ///
     /// In case the name used for the new index already exists, the existing
     /// index will be overwritten by the fresh one.
-    pub fn create_indices(&mut self, commands: Vec<CreateFieldIndex>) -> Result<(), StorageError> {
+    pub fn create_indices(&self, commands: Vec<CreateFieldIndex>) -> Result<(), StorageError> {
         let mut txn = self.env.write_txn()?;
 
         let mut indices_to_store: HashMap<&String, Index> = HashMap::new();
 
         let entries = self.data.iter(&txn)?;
-
-        let mut descriptors = HashMap::new();
 
         // Iterate over each item and populate the data to the new indices
         for entry in entries {
@@ -374,7 +373,9 @@ impl EntityStorage {
 
                     index.put(value, position);
                     indices_to_store.insert(&command.name, index);
-                    descriptors.insert(command.name.clone(), command.descriptor.clone());
+                    self.index_descriptors
+                        .pin()
+                        .insert(command.name.clone(), command.descriptor.clone());
                 }
             }
         }
@@ -383,8 +384,6 @@ impl EntityStorage {
         for (name, index) in indices_to_store {
             self.indices.put(&mut txn, name, &index).unwrap();
         }
-
-        self.index_descriptors.extend(descriptors);
 
         txn.commit().unwrap();
 
@@ -604,15 +603,13 @@ impl EntityStorage {
         // Iterate over the deltas to create for each field name the before and after index
         for delta in deltas {
             let stored_delta = current.entry(delta.field_name.clone()).or_insert_with(|| {
-                let type_descriptor = self
-                    .index_descriptors
-                    .get(&delta.field_name)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Could not store delta. Field name \"{}\" is not available in the DB.",
-                            &delta.field_name
-                        )
-                    });
+                let binding = self.index_descriptors.pin();
+                let type_descriptor = binding.get(&delta.field_name).unwrap_or_else(|| {
+                    panic!(
+                        "Could not store delta. Field name \"{}\" is not available in the DB.",
+                        &delta.field_name
+                    )
+                });
 
                 StoredDelta::from_type(delta.field_name.clone(), type_descriptor)
             });

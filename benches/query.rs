@@ -32,72 +32,59 @@ lazy_static! {
 #[bench]
 fn bench_filter_numeric_eq(b: &mut Bencher) {
     b.iter(move || {
-        tokio_test::block_on(async {
-            let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
-            let query = QueryExecution::new()
-                .with_filter(filter)
-                .with_pagination(*PAGINATION);
+        let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
+        let query = QueryExecution::new()
+            .with_filter(filter)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }
 
 #[bench]
 fn bench_filter_numeric_between(b: &mut Bencher) {
     b.iter(move || {
-        tokio_test::block_on(async {
-            let filter =
-                CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
-            let query = QueryExecution::new()
-                .with_filter(filter)
-                .with_pagination(*PAGINATION);
+        let filter =
+            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
+        let query = QueryExecution::new()
+            .with_filter(filter)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }
 
 #[bench]
 fn bench_filter_or(b: &mut Bencher) {
     b.iter(move || {
-        tokio_test::block_on(async {
-            let filter = CompositeFilter::or(vec![
-                CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
-                CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
-            ]);
-            let query = QueryExecution::new()
-                .with_filter(filter)
-                .with_pagination(*PAGINATION);
+        let filter = CompositeFilter::or(vec![
+            CompositeFilter::eq("sport", FieldValue::String(Sport::Basketball.as_string())),
+            CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
+        ]);
+        let query = QueryExecution::new()
+            .with_filter(filter)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }
 
 #[bench]
 fn bench_sort(b: &mut Bencher) {
     b.iter(move || {
-        tokio_test::block_on(async {
-            let sort = Sort::new("score").with_direction(SortDirection::DESC);
-            let query = QueryExecution::new()
-                .with_sort(sort)
-                .with_pagination(*PAGINATION);
+        let sort = Sort::new("score").with_direction(SortDirection::DESC);
+        let query = QueryExecution::new()
+            .with_sort(sort)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }
 
 #[bench]
 fn bench_filter_options(b: &mut Bencher) {
     b.iter(move || {
-        tokio_test::block_on(async {
-            ENGINE
-                .options(&NAME, OptionsQueryExecution::new())
-                .await
-                .unwrap();
-        });
+        ENGINE.options(&NAME, OptionsQueryExecution::new()).unwrap();
     });
 }
 
@@ -109,21 +96,16 @@ fn bench_apply_deltas(b: &mut Bencher) {
     deltas.extend(switch_sports_deltas(&PLAYERS, COUNT));
 
     let scope = DeltaScope::date(*DATE);
-
-    tokio_test::block_on(async {
-        ENGINE.store_deltas(&NAME, &scope, &deltas).await.unwrap();
-    });
+    ENGINE.store_deltas(&NAME, &scope, &deltas).unwrap();
 
     b.iter(move || {
-        tokio_test::block_on(async {
-            let scope = DeltaScope::date(DATE.next_day().unwrap());
+        let scope = DeltaScope::date(DATE.next_day().unwrap());
 
-            let query = QueryExecution::new()
-                .with_scope(scope)
-                .with_pagination(*PAGINATION);
+        let query = QueryExecution::new()
+            .with_scope(scope)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }
 
@@ -136,26 +118,21 @@ fn bench_apply_deltas_with_multiple_dates(b: &mut Bencher) {
 
     let mut date: Date = *DATE;
 
-    tokio_test::block_on(async {
-        for delta_chunk in deltas.chunks(10) {
-            ENGINE
-                .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk)
-                .await
-                .unwrap();
+    for delta_chunk in deltas.chunks(10) {
+        ENGINE
+            .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk)
+            .unwrap();
 
-            date = date.next_day().unwrap();
-        }
-    });
+        date = date.next_day().unwrap();
+    }
 
     b.iter(move || {
-        tokio_test::block_on(async {
-            let scope = DeltaScope::date(date.next_day().unwrap());
+        let scope = DeltaScope::date(date.next_day().unwrap());
 
-            let query = QueryExecution::new()
-                .with_scope(scope)
-                .with_pagination(*PAGINATION);
+        let query = QueryExecution::new()
+            .with_scope(scope)
+            .with_pagination(*PAGINATION);
 
-            ENGINE.query(&NAME, query).await.unwrap();
-        });
+        ENGINE.query(&NAME, query).unwrap();
     });
 }

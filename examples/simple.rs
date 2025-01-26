@@ -9,8 +9,7 @@ use delta_search::query::{
 use delta_search::Engine;
 use time::{Date, Month};
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
+fn main() -> Result<(), Error> {
     println!("Welcome to the simple Player search!");
 
     let michael_jordan = michael_jordan();
@@ -38,27 +37,25 @@ async fn main() -> Result<(), Error> {
 
     let engine = Engine::with_entities(vec![entity]);
 
-    let filter_options = engine.options(name, OptionsQueryExecution::new()).await;
+    let filter_options = engine.options(name, OptionsQueryExecution::new());
 
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
     let query = QueryExecution::new()
         .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
-    let players = engine.query(name, query).await;
+    let players = engine.query(name, query);
 
     println!("Basketball players sorted by score:\n{:?}\n", players);
 
-    let players = engine
-        .query(
-            name,
-            QueryExecution::new()
-                .with_filter(CompositeFilter::parse(
-                    "birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\"",
-                )?)
-                .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
-        )
-        .await;
+    let players = engine.query(
+        name,
+        QueryExecution::new()
+            .with_filter(CompositeFilter::parse(
+                "birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\"",
+            )?)
+            .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
+    );
 
     println!("Players born in the 80s:\n{:?}\n", players);
 
@@ -71,7 +68,6 @@ async fn main() -> Result<(), Error> {
 
     engine
         .store_deltas(name, &delta_scope, &switch_sports)
-        .await
         .unwrap();
 
     let query = QueryExecution::new()
@@ -83,7 +79,7 @@ async fn main() -> Result<(), Error> {
             1,
         )?));
 
-    let players = engine.query(name, query).await?;
+    let players = engine.query(name, query)?;
 
     println!(
         "Basketball players sorted by score after switching sports in 2023:\n{:?}\n",
@@ -97,9 +93,7 @@ async fn main() -> Result<(), Error> {
 
     let delta_scope = DeltaScope::context(0, Date::from_calendar_date(2023, Month::January, 1)?);
 
-    engine
-        .store_deltas(name, &delta_scope, &lower_scores)
-        .await?;
+    engine.store_deltas(name, &delta_scope, &lower_scores)?;
 
     let query = QueryExecution::new()
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
@@ -108,21 +102,19 @@ async fn main() -> Result<(), Error> {
             Date::from_calendar_date(2024, Month::January, 1)?,
         ));
 
-    let players = engine.query(name, query).await?;
+    let players = engine.query(name, query)?;
 
     println!(
         "Players sorted by score after decreasing their score by 1:\n{:?}\n",
         players
     );
 
-    engine.remove(name, &david_id).await?;
+    engine.remove(name, &david_id)?;
 
-    let players = engine
-        .query(
-            name,
-            QueryExecution::new().with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
-        )
-        .await?;
+    let players = engine.query(
+        name,
+        QueryExecution::new().with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
+    )?;
 
     println!(
         "Players playing basketball after deletion:\n{:?}\n",

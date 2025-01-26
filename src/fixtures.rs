@@ -78,17 +78,16 @@ impl TestRunners {
         }
     }
 
-    pub(crate) async fn start_runner(&self, items: Vec<DataItem>) -> TestPlayerRunner {
-        let mut runner = self
+    pub(crate) fn start_runner(&self, items: Vec<DataItem>) -> TestPlayerRunner {
+        let runner = self
             .runners
             .lock()
             .unwrap()
             .pop()
             .expect("No storages left - make sure you didn't exceed the test count");
 
-        if let Some(entry) = runner.engine.entities.get_mut(&runner.name) {
-            let mut entity = entry.write().await;
-            carry_players(items, &mut entity);
+        if let Some(entity) = runner.engine.entities.pin().get(&runner.name) {
+            carry_players(items, entity);
         }
 
         runner
@@ -122,13 +121,13 @@ pub fn create_player_from_index(index: u64) -> DataItem {
 }
 
 pub fn create_players_storage(name: &str, data: Vec<DataItem>) -> EntityStorage {
-    let mut storage = StorageBuilder::new(name).build().unwrap();
-    carry_players(data, &mut storage);
+    let storage = StorageBuilder::new(name).build().unwrap();
+    carry_players(data, &storage);
 
     storage
 }
 
-fn carry_players(items: Vec<DataItem>, storage: &mut EntityStorage) {
+fn carry_players(items: Vec<DataItem>, storage: &EntityStorage) {
     storage.carry(&items).unwrap();
 
     storage

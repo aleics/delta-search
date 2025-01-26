@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::format_description::well_known::Iso8601;
 use time::Date;
-use tokio::sync::RwLock;
 
 use delta_search::data::{
     DataItem, DataItemFieldsExternal, DataItemId, FieldValue, FieldValueExternal,
@@ -30,7 +29,7 @@ const DEFAULT_PAGE_SIZE: usize = 500;
 
 #[derive(Clone)]
 struct App {
-    inner: Arc<RwLock<Engine>>,
+    inner: Arc<Engine>,
 }
 
 impl App {
@@ -40,13 +39,12 @@ impl App {
             .map_err(|_| anyhow!("Could not initialize engine"))?;
 
         Ok(App {
-            inner: Arc::new(RwLock::new(engine)),
+            inner: Arc::new(engine),
         })
     }
 
-    async fn create_entity(&self, name: &str) -> Result<(), AppError> {
-        let mut engine = self.inner.write().await;
-        engine
+    fn create_entity(&self, name: &str) -> Result<(), AppError> {
+        self.inner
             .create_entity(name.to_string())
             .inspect_err(|err| error!("Could not create entity: {}", err))
             .map_err(|_| anyhow!("Could not create entity `{}`", name))?;
@@ -54,30 +52,26 @@ impl App {
         Ok(())
     }
 
-    async fn add_items(&self, name: &str, items: Vec<DataItemExternal>) -> Result<(), AppError> {
+    fn add_items(&self, name: &str, items: Vec<DataItemExternal>) -> Result<(), AppError> {
         let items: Vec<DataItem> = items
             .into_iter()
             .map(|input_item| DataItem::new(input_item.id, input_item.fields.inner))
             .collect();
 
-        let engine = self.inner.read().await;
-        engine
+        self.inner
             .add_multiple(name, items.as_slice())
-            .await
             .inspect_err(|err| error!("Could not add items: {}", err))
             .map_err(|_| anyhow!("Could not add items for entity `{}`", name))?;
 
         Ok(())
     }
 
-    async fn add_deltas(
+    fn add_deltas(
         &self,
         name: &str,
         scope: DeltaScopeInput,
         deltas_input: Vec<DeltaChangeInput>,
     ) -> Result<(), AppError> {
-        let engine = self.inner.read().await;
-
         let mut deltas = Vec::new();
         for delta_input in deltas_input {
             deltas.push(delta_input.map_delta_change()?);
@@ -85,26 +79,19 @@ impl App {
 
         let scope = scope.map_delta_scope()?;
 
-        engine
+        self.inner
             .store_deltas(name, &scope, deltas.as_slice())
-            .await
             .inspect_err(|err| error!("Could not store deltas: {}", err))
             .map_err(|_| anyhow!("Could not store deltas for entity `{}`", name))?;
 
         Ok(())
     }
 
-    async fn query(
-        &self,
-        name: &str,
-        input: QueryIndexInput,
-    ) -> Result<Vec<DataItemExternal>, AppError> {
+    fn query(&self, name: &str, input: QueryIndexInput) -> Result<Vec<DataItemExternal>, AppError> {
         let execution = Self::build_query_execution(input)?;
 
-        let engine = self.inner.read().await;
-        engine
+        self.inner
             .query(name, execution)
-            .await
             .map(|items| items.into_iter().map(DataItemExternal::from_item).collect())
             .inspect_err(|err| error!("Query could not be executed: {}", err))
             .map_err(|_| anyhow!("Query for entity `{}` could not be executed", name).into())
@@ -145,16 +132,14 @@ impl App {
         Ok(execution.with_pagination(pagination))
     }
 
-    async fn options(&self, name: &str) -> Result<Vec<FilterOption>, AppError> {
-        let engine = self.inner.read().await;
-        engine
+    fn options(&self, name: &str) -> Result<Vec<FilterOption>, AppError> {
+        self.inner
             .options(name, OptionsQueryExecution::new())
-            .await
             .inspect_err(|err| error!("Could not create options: {}", err))
             .map_err(|_| anyhow!("Could not create options for entity `{}`", name).into())
     }
 
-    async fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
+    fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
         let descriptor = match input.kind {
             CreateIndexTypeInput::String => TypeDescriptor::String,
             CreateIndexTypeInput::Numeric => TypeDescriptor::Numeric,
@@ -167,10 +152,8 @@ impl App {
             descriptor,
         };
 
-        let engine = self.inner.read().await;
-        engine
+        self.inner
             .create_index(name, command)
-            .await
             .inspect_err(|err| error!("Could not create index: {}", err))
             .map_err(|_| anyhow!("Could not create index for entity `{}`", name).into())
     }
@@ -237,7 +220,7 @@ async fn create_entity(
     State(search): State<App>,
     Path(name): Path<String>,
 ) -> Result<Json<()>, AppError> {
-    search.create_entity(&name).await?;
+    search.create_entity(&name)?;
     Ok(Json(()))
 }
 
@@ -268,7 +251,7 @@ async fn bulk_upsert_entity(
     Path(name): Path<String>,
     Json(input): Json<BulkUpsertEntity>,
 ) -> Result<Json<()>, AppError> {
-    search.add_items(&name, input.data).await?;
+    search.add_items(&name, input.data)?;
     Ok(Json(()))
 }
 
@@ -349,7 +332,7 @@ async fn bulk_add_deltas(
     Path(name): Path<String>,
     Json(input): Json<BulkStoreDeltas>,
 ) -> Result<Json<()>, AppError> {
-    search.add_deltas(&name, input.scope, input.deltas).await?;
+    search.add_deltas(&name, input.scope, input.deltas)?;
     Ok(Json(()))
 }
 
@@ -357,7 +340,7 @@ async fn get_options(
     State(search): State<App>,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<FilterOption>>, AppError> {
-    let options = search.options(&name).await?;
+    let options = search.options(&name)?;
     Ok(Json(options))
 }
 
@@ -383,7 +366,7 @@ async fn create_index(
     Path(name): Path<String>,
     Json(input): Json<CreateIndexInput>,
 ) -> Result<Json<()>, AppError> {
-    search.create_index(&name, input).await?;
+    search.create_index(&name, input)?;
     Ok(Json(()))
 }
 
@@ -428,6 +411,6 @@ async fn query(
     Path(name): Path<String>,
     Json(input): Json<QueryIndexInput>,
 ) -> Result<Json<QueryResponse>, AppError> {
-    let data = search.query(&name, input).await?;
+    let data = search.query(&name, input)?;
     Ok(Json(QueryResponse { data }))
 }
