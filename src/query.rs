@@ -438,16 +438,14 @@ pub enum FilterOperation {
 pub struct DeltaChange {
     pub id: DataItemId,
     pub field_name: String,
-    pub before: FieldValue,
     pub after: FieldValue,
 }
 
 impl DeltaChange {
-    pub fn new(id: DataItemId, field_name: String, before: FieldValue, after: FieldValue) -> Self {
+    pub fn new(id: DataItemId, field_name: String, after: FieldValue) -> Self {
         DeltaChange {
             id,
             field_name,
-            before,
             after,
         }
     }

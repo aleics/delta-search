@@ -80,7 +80,7 @@ impl App {
         let scope = scope.map_delta_scope()?;
 
         self.inner
-            .store_deltas(name, &scope, deltas.as_slice())
+            .store_deltas(name, &scope, deltas)
             .inspect_err(|err| error!("Could not store deltas: {}", err))
             .map_err(|_| anyhow!("Could not store deltas for entity `{}`", name))?;
 
@@ -267,19 +267,16 @@ struct BulkStoreDeltas {
 struct DeltaChangeInput {
     id: DataItemId,
     field_name: String,
-    before: FieldValueExternal,
     after: FieldValueExternal,
 }
 
 impl DeltaChangeInput {
     fn map_delta_change(self) -> Result<DeltaChange, AppError> {
-        let before = DeltaChangeInput::map_field(&self.field_name, self.before)?;
         let after = DeltaChangeInput::map_field(&self.field_name, self.after)?;
 
         Ok(DeltaChange {
             id: self.id,
             field_name: self.field_name,
-            before,
             after,
         })
     }

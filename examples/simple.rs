@@ -60,14 +60,14 @@ fn main() -> Result<(), Error> {
     println!("Players born in the 80s:\n{:?}\n", players);
 
     let switch_sports = vec![
-        SwitchSportsDelta::create(michael_jordan_id, Sport::Basketball, Sport::Football),
-        SwitchSportsDelta::create(lionel_messi_id, Sport::Football, Sport::Basketball),
+        SwitchSportsDelta::create(michael_jordan_id, Sport::Football),
+        SwitchSportsDelta::create(lionel_messi_id, Sport::Basketball),
     ];
 
     let delta_scope = DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1)?);
 
     engine
-        .store_deltas(name, &delta_scope, &switch_sports)
+        .store_deltas(name, &delta_scope, switch_sports)
         .unwrap();
 
     let query = QueryExecution::new()
@@ -93,7 +93,7 @@ fn main() -> Result<(), Error> {
 
     let delta_scope = DeltaScope::context(0, Date::from_calendar_date(2023, Month::January, 1)?);
 
-    engine.store_deltas(name, &delta_scope, &lower_scores)?;
+    engine.store_deltas(name, &delta_scope, lower_scores)?;
 
     let query = QueryExecution::new()
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))

@@ -192,7 +192,7 @@ pub fn switch_sports_deltas(data: &[DataItem], size: usize) -> Vec<DeltaChange> 
             Sport::Football => Sport::Basketball,
         };
 
-        deltas.push(SwitchSportsDelta::create(item.id, previous, new_sport));
+        deltas.push(SwitchSportsDelta::create(item.id, new_sport));
     }
 
     deltas
@@ -270,23 +270,17 @@ pub struct DecreaseScoreDelta;
 
 impl DecreaseScoreDelta {
     pub fn create(id: DataItemId, score: f64) -> DeltaChange {
-        DeltaChange::new(
-            id,
-            "score".to_string(),
-            FieldValue::dec(score),
-            FieldValue::dec(score - 1.0),
-        )
+        DeltaChange::new(id, "score".to_string(), FieldValue::dec(score - 1.0))
     }
 }
 
 pub struct SwitchSportsDelta;
 
 impl SwitchSportsDelta {
-    pub fn create(id: DataItemId, before: Sport, after: Sport) -> DeltaChange {
+    pub fn create(id: DataItemId, after: Sport) -> DeltaChange {
         DeltaChange::new(
             id,
             "sport".to_string(),
-            FieldValue::String(before.as_string()),
             FieldValue::String(after.as_string()),
         )
     }

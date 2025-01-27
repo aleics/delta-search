@@ -96,7 +96,7 @@ fn bench_apply_deltas(b: &mut Bencher) {
     deltas.extend(switch_sports_deltas(&PLAYERS, COUNT));
 
     let scope = DeltaScope::date(*DATE);
-    ENGINE.store_deltas(&NAME, &scope, &deltas).unwrap();
+    ENGINE.store_deltas(&NAME, &scope, deltas).unwrap();
 
     b.iter(move || {
         let scope = DeltaScope::date(DATE.next_day().unwrap());
@@ -120,7 +120,7 @@ fn bench_apply_deltas_with_multiple_dates(b: &mut Bencher) {
 
     for delta_chunk in deltas.chunks(10) {
         ENGINE
-            .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk)
+            .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk.to_vec())
             .unwrap();
 
         date = date.next_day().unwrap();

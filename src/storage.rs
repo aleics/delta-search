@@ -588,10 +588,11 @@ impl EntityStorage {
         Ok(self.data.get(&txn, id)?)
     }
 
+    /// Store deltas in the database by a given `scope`.
     pub(crate) fn add_deltas(
         &self,
         scope: &DeltaScope,
-        deltas: &[DeltaChange],
+        deltas: Vec<DeltaChange>,
     ) -> Result<(), StorageError> {
         let scope_timestamp = date_to_timestamp(scope.date);
         let scope_key = DeltaKey::new(scope.context, scope_timestamp);
@@ -600,25 +601,42 @@ impl EntityStorage {
 
         let mut current = self.deltas.get(&txn, &scope_key)?.unwrap_or_default();
 
-        // Iterate over the deltas to create for each field name the before and after index
-        for delta in deltas {
-            let stored_delta = current.entry(delta.field_name.clone()).or_insert_with(|| {
+        // Group deltas by field, so we reduce amount of calls to the database
+        let deltas_by_field: HashMap<String, Vec<DeltaChange>> =
+            deltas.into_iter().fold(HashMap::new(), |mut acc, delta| {
+                let entry = acc.entry(delta.field_name.clone()).or_default();
+                entry.push(delta);
+                acc
+            });
+
+        // Iterate over the deltas of each field and store a delta with the `before` value.
+        // This value is used during query time when applying delta changes to the indices.
+        for (field_name, deltas) in deltas_by_field.iter() {
+            let stored_delta = current.entry(field_name.clone()).or_insert_with(|| {
                 let binding = self.index_descriptors.pin();
-                let type_descriptor = binding.get(&delta.field_name).unwrap_or_else(|| {
+                let type_descriptor = binding.get(field_name).unwrap_or_else(|| {
                     panic!(
                         "Could not store delta. Field name \"{}\" is not available in the DB.",
-                        &delta.field_name
+                        field_name
                     )
                 });
 
-                StoredDelta::from_type(delta.field_name.clone(), type_descriptor)
+                StoredDelta::from_type(field_name.clone(), type_descriptor)
             });
 
-            let position = id_to_position(delta.id);
+            // Read the current index and attach to the stored delta
+            let index = self.indices.get(&txn, field_name)?;
 
-            stored_delta.before.put(delta.before.clone(), position);
-            stored_delta.after.put(delta.after.clone(), position);
-            stored_delta.affected.insert(position);
+            for delta in deltas {
+                let position = id_to_position(delta.id);
+
+                if let Some(before) = index.as_ref().and_then(|index| index.get_value(position)) {
+                    stored_delta.before.put(before, position);
+                }
+
+                stored_delta.after.put(delta.after.clone(), position);
+                stored_delta.affected.insert(position);
+            }
         }
 
         self.deltas.put(&mut txn, &scope_key, &current)?;

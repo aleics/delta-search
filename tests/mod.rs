@@ -250,7 +250,6 @@ mod integration_tests {
                 {
                     "id": 1,
                     "fieldName": "score",
-                    "before": 9.5,
                     "after": 6
                 }
             ]
@@ -324,7 +323,6 @@ mod integration_tests {
                 {
                     "id": 1,
                     "fieldName": "score",
-                    "before": 9.5,
                     "after": 6
                 }
             ]
@@ -352,7 +350,6 @@ mod integration_tests {
                 {
                     "id": 0,
                     "fieldName": "score",
-                    "before": 9,
                     "after": 5
                 }
             ]

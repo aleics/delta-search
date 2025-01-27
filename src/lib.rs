@@ -101,7 +101,7 @@ impl Engine {
         &self,
         name: &str,
         scope: &DeltaScope,
-        deltas: &[DeltaChange],
+        deltas: Vec<DeltaChange>,
     ) -> Result<(), EngineError> {
         if let Some(entity) = self.entities.pin().get(name) {
             entity.add_deltas(scope, deltas)?;
@@ -445,14 +445,14 @@ mod tests {
 
         let delta_scope =
             DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
-        let deltas = [
+        let deltas = vec![
             DecreaseScoreDelta::create(MICHAEL_JORDAN.id, 10.0),
             DecreaseScoreDelta::create(LIONEL_MESSI.id, 9.0),
         ];
 
         runner
             .engine
-            .store_deltas(&runner.name, &delta_scope, &deltas)
+            .store_deltas(&runner.name, &delta_scope, deltas)
             .unwrap();
 
         // when
@@ -495,15 +495,14 @@ mod tests {
 
         let delta_scope =
             DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
-        let deltas = [SwitchSportsDelta::create(
+        let deltas = vec![SwitchSportsDelta::create(
             MICHAEL_JORDAN.id,
-            Sport::Basketball,
             Sport::Football,
         )];
 
         runner
             .engine
-            .store_deltas(&runner.name, &delta_scope, &deltas)
+            .store_deltas(&runner.name, &delta_scope, deltas)
             .unwrap();
 
         // when
@@ -551,15 +550,14 @@ mod tests {
             Date::from_calendar_date(2023, Month::January, 1).unwrap(),
         );
 
-        let deltas = [SwitchSportsDelta::create(
+        let deltas = vec![SwitchSportsDelta::create(
             MICHAEL_JORDAN.id,
-            Sport::Basketball,
             Sport::Football,
         )];
 
         runner
             .engine
-            .store_deltas(&runner.name, &delta_scope, &deltas)
+            .store_deltas(&runner.name, &delta_scope, deltas)
             .unwrap();
 
         // when
