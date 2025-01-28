@@ -9,7 +9,7 @@ use time::Date;
 
 use crate::data::{DataItem, DataItemId, FieldValue};
 use crate::index::Index;
-use crate::storage::{id_to_position, position_to_id, EntityIndices, EntityStorage, StorageError};
+use crate::storage::{position_to_id, EntityIndices, EntityStorage, StorageError};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct FilterOption {
@@ -203,6 +203,7 @@ impl QueryExecution {
     }
 
     pub fn run(self, storage: &EntityStorage) -> Result<Vec<DataItem>, QueryError> {
+        // Read indices for the referenced fields in the query
         let indices = match &self.scope {
             Some(scope) => storage.read_indices_in(scope, &self.ref_fields),
             None => storage.read_current_indices(&self.ref_fields),
@@ -210,14 +211,30 @@ impl QueryExecution {
 
         let indices = QueryIndices::new(indices);
 
+        // Apply filter given the indices
         let filter_result = self
             .filter
             .as_ref()
             .map(|filter| indices.execute_filter(filter))
             .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
 
-        let item_ids = self.sort(filter_result, &indices)?;
-        self.read_data(&item_ids, storage, &indices.indices)
+        // Sort filter results into a vector of IDs
+        let sorted_ids = self.sort(filter_result, &indices)?;
+
+        // Apply pagination
+        let pagination = self
+            .pagination
+            .unwrap_or(Pagination::new(0, sorted_ids.len()));
+
+        let paginated_ids = sorted_ids
+            .iter()
+            .skip(pagination.start)
+            .take(pagination.size);
+
+        // Read from the database the data of the paginated result
+        storage
+            .read_multiple(paginated_ids, &indices.indices)
+            .map_err(QueryError::Storage)
     }
 
     fn sort(
@@ -233,40 +250,6 @@ impl QueryExecution {
         };
 
         Ok(sorted_ids)
-    }
-
-    fn read_data(
-        &self,
-        ids: &[DataItemId],
-        storage: &EntityStorage,
-        indices: &EntityIndices,
-    ) -> Result<Vec<DataItem>, QueryError> {
-        let mut data = Vec::new();
-
-        let pagination = self.pagination.unwrap_or(Pagination::new(0, ids.len()));
-
-        for id in ids.iter().skip(pagination.start).take(pagination.size) {
-            let Some(mut item) = storage.read_by_id(id)? else {
-                continue;
-            };
-
-            let position = id_to_position(item.id);
-            if indices.affected.items.contains(position) {
-                for field in &indices.affected.fields {
-                    if let Some(value) = indices
-                        .field_indices
-                        .get(field)
-                        .and_then(|index| index.get_value(position))
-                    {
-                        item.fields.insert(field.clone(), value);
-                    }
-                }
-            }
-
-            data.push(item);
-        }
-
-        Ok(data)
     }
 }
 

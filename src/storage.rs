@@ -582,10 +582,42 @@ impl EntityStorage {
         self.read_all_indices(&txn)
     }
 
-    /// Read a data item from the storage using its identifier.
-    pub(crate) fn read_by_id(&self, id: &DataItemId) -> Result<Option<DataItem>, StorageError> {
+    /// Read multiple data items given an iterator of item IDs. The provided
+    /// index is used to overwrite any affected data by a delta change.
+    pub(crate) fn read_multiple<'a, T>(
+        &self,
+        ids: T,
+        indices: &EntityIndices,
+    ) -> Result<Vec<DataItem>, StorageError>
+    where
+        T: Iterator<Item = &'a DataItemId>,
+    {
         let txn = self.env.read_txn().unwrap();
-        Ok(self.data.get(&txn, id)?)
+
+        let mut data = Vec::new();
+
+        for id in ids {
+            let Some(mut item) = self.data.get(&txn, id)? else {
+                continue;
+            };
+
+            let position = id_to_position(item.id);
+            if indices.affected.items.contains(position) {
+                for field_name in &indices.affected.fields {
+                    if let Some(value) = indices
+                        .field_indices
+                        .get(field_name)
+                        .and_then(|index| index.get_value(position))
+                    {
+                        item.fields.insert(field_name.clone(), value);
+                    }
+                }
+            }
+
+            data.push(item);
+        }
+
+        Ok(data)
     }
 
     /// Store deltas in the database by a given `scope`.
