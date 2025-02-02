@@ -21,7 +21,7 @@ use delta_search::query::{
     QueryExecution, Sort, SortDirection,
 };
 use delta_search::storage::CreateFieldIndex;
-use delta_search::Engine;
+use delta_search::{Engine, EngineError};
 use tracing::{error, info};
 
 const DEFAULT_START_PAGE: usize = 0;
@@ -47,7 +47,12 @@ impl App {
         self.inner
             .create_entity(name.to_string())
             .inspect_err(|err| error!("Could not create entity: {}", err))
-            .map_err(|_| anyhow!("Could not create entity `{}`", name))?;
+            .map_err(|err| match err {
+                EngineError::EntityAlreadyExists { name } => AppError::EntityAlreadyExists {
+                    message: format!("Entity with name \"{}\" already exists", name),
+                },
+                _ => AppError::ServerError(anyhow!("Could not create entity `{}`", name)),
+            })?;
 
         Ok(())
     }
@@ -163,6 +168,8 @@ impl App {
 enum AppError {
     #[error("filter query is not valid")]
     InvalidFilterQuery,
+    #[error("entity already exists")]
+    EntityAlreadyExists { message: String },
     #[error("request is not valid")]
     InvalidRequest { message: String },
     #[error(transparent)]
@@ -177,6 +184,10 @@ impl IntoResponse for AppError {
                 .body(Body::new(
                     "Filter query is invalid or could not be parsed.".to_string(),
                 ))
+                .unwrap(),
+            AppError::EntityAlreadyExists { message } => Response::builder()
+                .status(StatusCode::CONFLICT)
+                .body(Body::new(format!("Conflict: \"{}\"", message)))
                 .unwrap(),
             AppError::InvalidRequest { message } => Response::builder()
                 .status(StatusCode::BAD_REQUEST)

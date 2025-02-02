@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::data::{date_to_timestamp, DataItem};
-use crate::index::{Index, TypeDescriptor};
+use crate::index::{Index, IndexError, TypeDescriptor};
 use crate::query::{DeltaChange, DeltaScope};
 use crate::DataItemId;
 
@@ -172,10 +172,26 @@ impl<'a> BytesDecode<'a> for DeltaKeyContextCodec {
 pub struct EntityStorage {
     pub(crate) id: String,
     env: Env,
+
+    /// Database storing the entity's data items, where the key is the data
+    /// item id and the value the data item itself.
     data: Database<BEU64, SerdeBincode<DataItem>>,
+
+    /// Database storing the entity's indices, where the key is the field name
+    /// and the value is the index.
     indices: Database<Str, SerdeBincode<Index>>,
+
+    /// Database storing custom bitmaps needed to index the data items'
+    /// and their positions in the indices.
     documents: Database<Str, SerdeBincode<RoaringBitmap>>,
+
+    /// Database to store deltas for each scope and affected field. The key
+    /// is an identifier for each delta scope, and the value is a map
+    /// of deltas for each field.
     deltas: Database<DeltaKeyCodec, SerdeBincode<HashMap<String, StoredDelta>>>,
+
+    /// An in-memory key-value map to store type descriptors for each index.
+    /// This is propagated during initialization.
     index_descriptors: papaya::HashMap<String, TypeDescriptor>,
 }
 
@@ -310,14 +326,14 @@ impl EntityStorage {
                 };
 
                 if let Some(index) = indices_to_store.get_mut(index_name) {
-                    index.put(value, position);
+                    index.put(value, position)?;
                 } else {
                     let mut index = self
                         .indices
                         .get(&txn, index_name)?
                         .unwrap_or_else(|| Index::from_type(index_descriptor));
 
-                    index.put(value, position);
+                    index.put(value, position)?;
                     indices_to_store.insert(index_name.clone(), index);
                 }
             }
@@ -362,7 +378,7 @@ impl EntityStorage {
                 let position = id_to_position(id);
 
                 if let Some(index) = indices_to_store.get_mut(&command.name) {
-                    index.put(value, position);
+                    index.put(value, position)?;
                 } else {
                     // Create the new index and appended in memory, after it's populated
                     // with the item's data it will be stored.
@@ -371,7 +387,7 @@ impl EntityStorage {
                         .get(&txn, &command.name)?
                         .unwrap_or_else(|| Index::from_type(&command.descriptor));
 
-                    index.put(value, position);
+                    index.put(value, position)?;
                     indices_to_store.insert(&command.name, index);
                     self.index_descriptors
                         .pin()
@@ -382,10 +398,10 @@ impl EntityStorage {
 
         // Update the stored indices with the new entries
         for (name, index) in indices_to_store {
-            self.indices.put(&mut txn, name, &index).unwrap();
+            self.indices.put(&mut txn, name, &index)?;
         }
 
-        txn.commit().unwrap();
+        txn.commit()?;
 
         Ok(())
     }
@@ -499,8 +515,8 @@ impl EntityStorage {
             if stored_delta_key.timestamp <= scope_timestamp {
                 for (field, stored_delta) in stored_deltas {
                     if let Some(aggregated_delta) = aggregated_deltas.get_mut(&field) {
-                        aggregated_delta.before.plus(&stored_delta.before);
-                        aggregated_delta.after.plus(&stored_delta.after);
+                        aggregated_delta.before.plus(&stored_delta.before)?;
+                        aggregated_delta.after.plus(&stored_delta.after)?;
                         aggregated_delta.affected |= &stored_delta.affected;
                     } else {
                         aggregated_deltas.insert(field, stored_delta);
@@ -520,20 +536,20 @@ impl EntityStorage {
     fn apply_deltas(
         deltas: HashMap<String, StoredDelta>,
         existing: &mut EntityIndices,
-    ) -> AffectedData {
+    ) -> Result<AffectedData, StorageError> {
         let mut affected = AffectedData::default();
 
         for (field_name, stored_delta) in &deltas {
             if let Some(index) = existing.field_indices.get_mut(field_name) {
-                index.minus(&stored_delta.before);
-                index.plus(&stored_delta.after);
+                index.minus(&stored_delta.before)?;
+                index.plus(&stored_delta.after)?;
 
                 affected.items |= &stored_delta.affected;
                 affected.fields.push(field_name.clone());
             }
         }
 
-        affected
+        Ok(affected)
     }
 
     pub fn read_indices_in(
@@ -553,7 +569,7 @@ impl EntityStorage {
             self.read_indices(&txn, &fields)?
         };
 
-        let affected = EntityStorage::apply_deltas(deltas, &mut indices);
+        let affected = EntityStorage::apply_deltas(deltas, &mut indices)?;
 
         Ok(indices.with_affected(affected))
     }
@@ -564,7 +580,7 @@ impl EntityStorage {
         let deltas = self.read_deltas(&txn, scope)?;
         let mut indices = self.read_all_indices(&txn)?;
 
-        let affected = EntityStorage::apply_deltas(deltas, &mut indices);
+        let affected = EntityStorage::apply_deltas(deltas, &mut indices)?;
 
         Ok(indices.with_affected(affected))
     }
@@ -663,10 +679,10 @@ impl EntityStorage {
                 let position = id_to_position(delta.id);
 
                 if let Some(before) = index.as_ref().and_then(|index| index.get_value(position)) {
-                    stored_delta.before.put(before, position);
+                    stored_delta.before.put(before, position)?;
                 }
 
-                stored_delta.after.put(delta.after.clone(), position);
+                stored_delta.after.put(delta.after.clone(), position)?;
                 stored_delta.affected.insert(position);
             }
         }
@@ -690,6 +706,8 @@ pub enum StorageError {
     CreateStoragePath(#[from] std::io::Error),
     #[error(transparent)]
     DbOperation(#[from] heed::Error),
+    #[error(transparent)]
+    Index(#[from] IndexError),
 }
 
 #[derive(Default, Debug)]

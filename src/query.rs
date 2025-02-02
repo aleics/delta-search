@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Display;
 
 use pest::iterators::Pair;
 use pest::Parser;
@@ -8,7 +9,7 @@ use thiserror::Error;
 use time::Date;
 
 use crate::data::{DataItem, DataItemId, FieldValue};
-use crate::index::Index;
+use crate::index::{FilterError, Index};
 use crate::storage::{position_to_id, EntityIndices, EntityStorage, StorageError};
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -63,40 +64,56 @@ impl QueryIndices {
         self.indices.field_indices.get(name)
     }
 
-    fn execute_filter(&self, filter: &CompositeFilter) -> FilterResult {
-        match filter {
+    fn execute_filter(&self, filter: &CompositeFilter) -> Result<FilterResult, QueryError> {
+        let result = match filter {
             CompositeFilter::And(filters) => {
-                let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
-                    let inner = acc
-                        .map(|current| current.and(self.execute_filter(filter)))
-                        .unwrap_or_else(|| self.execute_filter(filter));
-                    Some(inner)
-                });
+                let mut result: Option<FilterResult> = None;
+
+                for filter in filters {
+                    let inner = self.execute_filter(filter)?;
+                    let next = if let Some(current) = result {
+                        current.and(inner)
+                    } else {
+                        inner
+                    };
+
+                    result = Some(next);
+                }
 
                 result.unwrap_or_else(FilterResult::empty)
             }
             CompositeFilter::Or(filters) => {
-                let result: Option<FilterResult> = filters.iter().fold(None, |acc, filter| {
-                    let inner = acc
-                        .map(|current| current.or(self.execute_filter(filter)))
-                        .unwrap_or_else(|| self.execute_filter(filter));
-                    Some(inner)
-                });
+                let mut result: Option<FilterResult> = None;
+
+                for filter in filters {
+                    let inner = self.execute_filter(filter)?;
+                    let next = if let Some(current) = result {
+                        current.or(inner)
+                    } else {
+                        inner
+                    };
+
+                    result = Some(next);
+                }
 
                 result.unwrap_or_else(FilterResult::empty)
             }
             CompositeFilter::Not(filter) => {
-                let result = self.execute_filter(filter);
+                let result = self.execute_filter(filter)?;
                 FilterResult::new(&self.indices.all - result.hits)
             }
             CompositeFilter::Single(filter) => {
-                let index = self.get(&filter.name).unwrap_or_else(|| {
-                    panic!("Filter with name {} has no index assigned", &filter.name)
-                });
+                let Some(index) = self.get(&filter.name) else {
+                    return Err(QueryError::MissingIndex(filter.name.to_string()));
+                };
 
-                index.filter(&filter.operation)
+                let hits = index.filter(&filter.operation)?;
+
+                FilterResult::new(hits)
             }
-        }
+        };
+
+        Ok(result)
     }
 
     fn execute_sort(&self, items: &RoaringBitmap, sort: &Sort) -> Result<Vec<u32>, QueryError> {
@@ -156,11 +173,11 @@ impl OptionsQueryExecution {
 
         let indices = QueryIndices::new(indices);
 
-        let filter_result = self
-            .filter
-            .as_ref()
-            .map(|filter| indices.execute_filter(filter))
-            .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
+        let filter_result = if let Some(filter) = self.filter.as_ref() {
+            indices.execute_filter(filter)?
+        } else {
+            FilterResult::new(indices.indices.all.clone())
+        };
 
         Ok(indices.compute_filter_options(filter_result.hits))
     }
@@ -212,11 +229,11 @@ impl QueryExecution {
         let indices = QueryIndices::new(indices);
 
         // Apply filter given the indices
-        let filter_result = self
-            .filter
-            .as_ref()
-            .map(|filter| indices.execute_filter(filter))
-            .unwrap_or_else(|| FilterResult::new(indices.indices.all.clone()));
+        let filter_result = if let Some(filter) = self.filter.as_ref() {
+            indices.execute_filter(filter)?
+        } else {
+            FilterResult::new(indices.indices.all.clone())
+        };
 
         // Sort filter results into a vector of IDs
         let sorted_ids = self.sort(filter_result, &indices)?;
@@ -417,6 +434,29 @@ pub enum FilterOperation {
     LessThanOrEqual(FieldValue),
 }
 
+#[derive(Clone, Debug)]
+pub enum FilterName {
+    Eq,
+    Between,
+    GreaterThan,
+    GreaterOrEqual,
+    LessThan,
+    LessThanOrEqual,
+}
+
+impl Display for FilterName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterName::Eq => write!(f, "equal"),
+            FilterName::Between => write!(f, "between"),
+            FilterName::GreaterThan => write!(f, "greater than"),
+            FilterName::GreaterOrEqual => write!(f, "greater or equal than"),
+            FilterName::LessThan => write!(f, "less than"),
+            FilterName::LessThanOrEqual => write!(f, "less than or equal"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeltaChange {
     pub id: DataItemId,
@@ -592,6 +632,8 @@ impl FilterParser {
 pub enum QueryError {
     #[error("index is not present for field \"{0}\"")]
     MissingIndex(String),
+    #[error(transparent)]
+    Filter(#[from] FilterError),
     #[error(transparent)]
     Storage(#[from] StorageError),
 }

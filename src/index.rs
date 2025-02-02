@@ -1,14 +1,16 @@
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Display;
 use std::iter::FromIterator;
 use std::ops::Bound;
 use std::panic;
 
 use crate::data::{date_to_timestamp, parse_date, timestamp_to_date, FieldValue};
-use crate::query::{FilterOperation, FilterResult, SortDirection};
+use crate::query::{FilterName, FilterOperation, SortDirection};
 use indexmap::IndexSet;
 use ordered_float::OrderedFloat;
 use roaring::{MultiOps, RoaringBitmap};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use time::format_description::well_known::Iso8601;
 
 #[derive(Clone, Debug)]
@@ -21,8 +23,8 @@ pub enum TypeDescriptor {
 }
 
 trait FilterableIndex {
-    fn filter(&self, op: &FilterOperation) -> FilterResult {
-        let hits = match op {
+    fn filter(&self, op: &FilterOperation) -> Result<RoaringBitmap, FilterError> {
+        match op {
             FilterOperation::Eq(value) => self.equal(value),
             FilterOperation::Between(first, second) => {
                 self.between(Bound::Included(first), Bound::Included(second))
@@ -39,19 +41,16 @@ trait FilterableIndex {
             FilterOperation::LessThanOrEqual(value) => {
                 self.between(Bound::Unbounded, Bound::Included(value))
             }
-        };
-
-        hits.map(FilterResult::new)
-            .unwrap_or_else(FilterResult::empty)
+        }
     }
 
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap>;
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError>;
 
     fn between(
         &self,
         first: Bound<&FieldValue>,
         second: Bound<&FieldValue>,
-    ) -> Option<RoaringBitmap>;
+    ) -> Result<RoaringBitmap, FilterError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,7 +88,7 @@ impl Index {
         }
     }
 
-    pub(crate) fn filter(&self, op: &FilterOperation) -> FilterResult {
+    pub(crate) fn filter(&self, op: &FilterOperation) -> Result<RoaringBitmap, FilterError> {
         match self {
             Index::String(index) => index.filter(op),
             Index::Numeric(index) => index.filter(op),
@@ -119,7 +118,7 @@ impl Index {
         }
     }
 
-    pub(crate) fn put(&mut self, value: FieldValue, position: u32) {
+    pub(crate) fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
         match self {
             Index::String(index) => index.put(value, position),
             Index::Numeric(index) => index.put(value, position),
@@ -129,29 +128,41 @@ impl Index {
         }
     }
 
-    pub(crate) fn plus(&mut self, index: &Index) {
+    pub(crate) fn plus(&mut self, index: &Index) -> Result<(), IndexError> {
         match (self, index) {
             (Index::String(left), Index::String(right)) => left.plus(right),
             (Index::Numeric(left), Index::Numeric(right)) => left.plus(right),
             (Index::Date(left), Index::Date(right)) => left.plus(right),
             (Index::Enum(left), Index::Enum(right)) => left.plus(right),
             (Index::Bool(left), Index::Bool(right)) => left.plus(right),
-            _ => panic!("Could not apply a plus operation for indices of different types"),
-        }
+            _ => {
+                return Err(IndexError::UnsupportedOperation {
+                    operation: "plus".to_string(),
+                });
+            }
+        };
+
+        Ok(())
     }
 
-    pub(crate) fn minus(&mut self, index: &Index) {
+    pub(crate) fn minus(&mut self, index: &Index) -> Result<(), IndexError> {
         match (self, index) {
             (Index::String(left), Index::String(right)) => left.minus(right),
             (Index::Numeric(left), Index::Numeric(right)) => left.minus(right),
             (Index::Date(left), Index::Date(right)) => left.minus(right),
             (Index::Enum(left), Index::Enum(right)) => left.minus(right),
             (Index::Bool(left), Index::Bool(right)) => left.minus(right),
-            _ => panic!("Could not apply a minus operation for indices of different types"),
-        }
+            _ => {
+                return Err(IndexError::UnsupportedOperation {
+                    operation: "minus".to_string(),
+                });
+            }
+        };
+
+        Ok(())
     }
 
-    pub(crate) fn remove(&mut self, value: &FieldValue, position: u32) {
+    pub(crate) fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
         match self {
             Index::String(index) => index.remove(value, position),
             Index::Numeric(index) => index.remove(value, position),
@@ -204,20 +215,28 @@ impl StringIndex {
             .map(|value| FieldValue::str(value.as_str()))
     }
 
-    fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .get_string()
-            .expect("String index only allows to insert string values.");
+    fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.get_string() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::String,
+            });
+        };
 
         self.inner.put(value, position);
+
+        Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .as_string()
-            .expect("String index only allows to remove string values.");
+    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.as_string() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::String,
+            });
+        };
 
         self.inner.remove(value, position);
+
+        Ok(())
     }
 
     fn plus(&mut self, other: &StringIndex) {
@@ -238,16 +257,32 @@ impl StringIndex {
 }
 
 impl FilterableIndex for StringIndex {
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let string_value = value
-            .as_string()
-            .expect("Invalid value for \"equal\" filter. Expected string value.");
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(string_value) = value.as_string() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Eq,
+                type_name: TypeName::String,
+            });
+        };
 
-        self.inner.get(string_value).cloned()
+        let hits = self
+            .inner
+            .get(string_value)
+            .cloned()
+            .unwrap_or_else(RoaringBitmap::new);
+
+        Ok(hits)
     }
 
-    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
-        panic!("Unsupported filter operation \"between\" for string index")
+    fn between(
+        &self,
+        _: Bound<&FieldValue>,
+        _: Bound<&FieldValue>,
+    ) -> Result<RoaringBitmap, FilterError> {
+        Err(FilterError::UnsupportedOperation {
+            filter: FilterName::Between,
+            type_name: TypeName::String,
+        })
     }
 }
 
@@ -273,22 +308,32 @@ impl NumericIndex {
             .map(|value| FieldValue::Decimal(*value))
     }
 
-    fn put(&mut self, value: FieldValue, position: u32) {
+    fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
         let value = match value {
             FieldValue::Integer(value) => OrderedFloat(value as f64),
             FieldValue::Decimal(value) => value,
-            _ => panic!("Numeric index only allows to insert numeric values."),
+            _ => {
+                return Err(IndexError::UnexpectedValue {
+                    expected_type: TypeName::Numeric,
+                })
+            }
         };
 
         self.inner.put(value, position);
+
+        Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .as_decimal()
-            .expect("Numeric index only allows to remove numeric values.");
+    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.as_decimal() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::Numeric,
+            });
+        };
 
         self.inner.remove(value, position);
+
+        Ok(())
     }
 
     fn plus(&mut self, other: &NumericIndex) {
@@ -309,19 +354,28 @@ impl NumericIndex {
 }
 
 impl FilterableIndex for NumericIndex {
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let numeric_value = value
-            .as_decimal()
-            .expect("Invalid value for \"equal\" filter. Expected numeric value.");
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(numeric_value) = value.as_decimal() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Eq,
+                type_name: TypeName::Numeric,
+            });
+        };
 
-        self.inner.get(numeric_value).cloned()
+        let hits = self
+            .inner
+            .get(numeric_value)
+            .cloned()
+            .unwrap_or_else(RoaringBitmap::new);
+
+        Ok(hits)
     }
 
     fn between(
         &self,
         first: Bound<&FieldValue>,
         second: Bound<&FieldValue>,
-    ) -> Option<RoaringBitmap> {
+    ) -> Result<RoaringBitmap, FilterError> {
         let first_bound = first.map(|value| {
             value
                 .as_decimal()
@@ -339,11 +393,7 @@ impl FilterableIndex for NumericIndex {
             matches |= bitmap;
         }
 
-        if matches.is_empty() {
-            None
-        } else {
-            Some(matches)
-        }
+        Ok(matches)
     }
 }
 
@@ -384,18 +434,28 @@ impl DateIndex {
         Some(FieldValue::String(date))
     }
 
-    fn put(&mut self, value: FieldValue, position: u32) {
-        let value =
-            DateIndex::parse_value(&value).expect("Date index only allows to insert date values.");
+    fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = DateIndex::parse_value(&value) else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::Date,
+            });
+        };
 
         self.inner.put(value, position);
+
+        Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value =
-            DateIndex::parse_value(value).expect("Date index only allows to remove date values.");
+    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = DateIndex::parse_value(value) else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::Date,
+            });
+        };
 
         self.inner.remove(&value, position);
+
+        Ok(())
     }
 
     fn plus(&mut self, other: &DateIndex) {
@@ -408,18 +468,28 @@ impl DateIndex {
 }
 
 impl FilterableIndex for DateIndex {
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let date_value = DateIndex::parse_value(value)
-            .expect("Invalid value for \"equal\" filter. Expected date value.");
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(date_value) = DateIndex::parse_value(value) else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Eq,
+                type_name: TypeName::Date,
+            });
+        };
 
-        self.inner.get(&date_value).cloned()
+        let hits = self
+            .inner
+            .get(&date_value)
+            .cloned()
+            .unwrap_or_else(RoaringBitmap::new);
+
+        Ok(hits)
     }
 
     fn between(
         &self,
         first: Bound<&FieldValue>,
         second: Bound<&FieldValue>,
-    ) -> Option<RoaringBitmap> {
+    ) -> Result<RoaringBitmap, FilterError> {
         let first_bound = first.map(|value| {
             DateIndex::parse_value(value)
                 .expect("Invalid \"between\" filter value. Expected date value.")
@@ -435,11 +505,7 @@ impl FilterableIndex for DateIndex {
             matches |= bitmap;
         }
 
-        if matches.is_empty() {
-            None
-        } else {
-            Some(matches)
-        }
+        Ok(matches)
     }
 }
 
@@ -474,30 +540,40 @@ impl EnumIndex {
             .map(|value| FieldValue::str(value.as_str()))
     }
 
-    fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .as_string()
-            .expect("Enum index only allows to insert string values.");
+    fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.as_string() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::String,
+            });
+        };
 
-        let index = self
-            .values
-            .get_index_of(value)
-            .expect("Enum index does not know value to be inserted.");
+        let Some(index) = self.values.get_index_of(value) else {
+            return Err(IndexError::UnknownEnumValue {
+                value: value.clone(),
+            });
+        };
 
         self.inner.put(index, position);
+
+        Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .as_string()
-            .expect("Enum index only allows to remove string values.");
+    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.as_string() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::String,
+            });
+        };
 
-        let index = self
-            .values
-            .get_index_of(value)
-            .expect("Enum index does not know value to be removed.");
+        let Some(index) = self.values.get_index_of(value) else {
+            return Err(IndexError::UnknownEnumValue {
+                value: value.clone(),
+            });
+        };
 
         self.inner.remove(&index, position);
+
+        Ok(())
     }
 
     fn plus(&mut self, other: &EnumIndex) {
@@ -522,16 +598,35 @@ impl EnumIndex {
 }
 
 impl FilterableIndex for EnumIndex {
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let string_value = value
-            .as_string()
-            .expect("Enum index only supports string values for \"equal\" filter.");
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(string_value) = value.as_string() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Eq,
+                type_name: TypeName::Enum,
+            });
+        };
 
-        let index = self.values.get_index_of(string_value)?;
-        self.inner.get(&index).cloned()
+        let Some(index) = self.values.get_index_of(string_value) else {
+            return Err(FilterError::UnknownEnumValue {
+                filter: FilterName::Eq,
+                value: string_value.to_string(),
+            });
+        };
+
+        let hits = self
+            .inner
+            .get(&index)
+            .cloned()
+            .unwrap_or_else(RoaringBitmap::new);
+
+        Ok(hits)
     }
 
-    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
+    fn between(
+        &self,
+        _: Bound<&FieldValue>,
+        _: Bound<&FieldValue>,
+    ) -> Result<RoaringBitmap, FilterError> {
         panic!("Unsupported filter operation \"between\" for enum index")
     }
 }
@@ -560,20 +655,28 @@ impl BoolIndex {
             .map(|value| FieldValue::Bool(*value))
     }
 
-    fn put(&mut self, value: FieldValue, position: u32) {
-        let value = value
-            .get_bool()
-            .expect("Bool index only allows to insert bool values.");
+    fn put(&mut self, value: FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.get_bool() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::Bool,
+            });
+        };
 
         self.inner.put(value, position);
+
+        Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) {
-        let value = value
-            .as_bool()
-            .expect("Bool index only allows to remove bool values.");
+    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
+        let Some(value) = value.as_bool() else {
+            return Err(IndexError::UnexpectedValue {
+                expected_type: TypeName::Bool,
+            });
+        };
 
         self.inner.remove(value, position);
+
+        Ok(())
     }
 
     fn plus(&mut self, other: &BoolIndex) {
@@ -594,15 +697,28 @@ impl BoolIndex {
 }
 
 impl FilterableIndex for BoolIndex {
-    fn equal(&self, value: &FieldValue) -> Option<RoaringBitmap> {
-        let bool_value = value
-            .as_bool()
-            .expect("Invalid value for \"equal\" filter. Expected bool value.");
+    fn equal(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(bool_value) = value.as_bool() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Eq,
+                type_name: TypeName::Bool,
+            });
+        };
 
-        self.inner.get(bool_value).cloned()
+        let hits = self
+            .inner
+            .get(bool_value)
+            .cloned()
+            .unwrap_or_else(RoaringBitmap::new);
+
+        Ok(hits)
     }
 
-    fn between(&self, _: Bound<&FieldValue>, _: Bound<&FieldValue>) -> Option<RoaringBitmap> {
+    fn between(
+        &self,
+        _: Bound<&FieldValue>,
+        _: Bound<&FieldValue>,
+    ) -> Result<RoaringBitmap, FilterError> {
         panic!("Unsupported filter operation \"between\" for bool index")
     }
 }
@@ -709,6 +825,55 @@ impl<T: Ord + Clone> SortableIndex<T> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum TypeName {
+    String,
+    Numeric,
+    Date,
+    Bool,
+    Enum,
+}
+
+impl Display for TypeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeName::String => write!(f, "string"),
+            TypeName::Numeric => write!(f, "numeric"),
+            TypeName::Date => write!(f, "date"),
+            TypeName::Bool => write!(f, "bool"),
+            TypeName::Enum => write!(f, "enum"),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum IndexError {
+    #[error("index operation \"{operation}\" is not supported")]
+    UnsupportedOperation { operation: String },
+    #[error("unexpected value for type {expected_type}")]
+    UnexpectedValue { expected_type: TypeName },
+    #[error("Value \"{value}\" is unknown for enum")]
+    UnknownEnumValue { value: String },
+}
+
+#[derive(Error, Debug)]
+#[non_exhaustive]
+pub enum FilterError {
+    #[error("Invalid filter value for filter \"{filter}\". Expected {type_name} value")]
+    InvalidInput {
+        filter: FilterName,
+        type_name: TypeName,
+    },
+    #[error("Unsupported operation for filter \"{filter}\". Expected {type_name} value")]
+    UnsupportedOperation {
+        filter: FilterName,
+        type_name: TypeName,
+    },
+    #[error("Value \"{value}\" is unknown for enum in filter \"{filter}\"")]
+    UnknownEnumValue { value: String, filter: FilterName },
+}
+
 #[cfg(test)]
 mod tests {
     use roaring::RoaringBitmap;
@@ -729,7 +894,7 @@ mod tests {
         ]));
 
         // when
-        left.plus(&right);
+        left.plus(&right).unwrap();
 
         // then
         assert_eq!(
@@ -756,7 +921,7 @@ mod tests {
         )]));
 
         // when
-        left.minus(&right);
+        left.minus(&right).unwrap();
 
         // then
         assert_eq!(

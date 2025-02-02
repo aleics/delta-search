@@ -43,7 +43,7 @@ impl Engine {
 
     pub fn create_entity(&self, name: String) -> Result<(), EngineError> {
         if self.entities.pin().contains_key(&name) {
-            panic!("Entity with name \"{}\" already exists", name);
+            return Err(EngineError::EntityAlreadyExists { name });
         }
 
         let entity = StorageBuilder::new(&name).build()?;
@@ -136,6 +136,8 @@ pub enum EngineError {
     Query(#[from] QueryError),
     #[error("entity not found")]
     EntityNotFound,
+    #[error("entity already exists")]
+    EntityAlreadyExists { name: String },
 }
 
 #[cfg(test)]
