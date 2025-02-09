@@ -17,7 +17,7 @@ use delta_search::query::{
 use delta_search::Engine;
 use time::{Date, Month};
 
-const COUNT: usize = 10000;
+const COUNT: usize = 100000;
 const PAGE_SIZE: usize = 500;
 
 lazy_static! {
@@ -118,7 +118,7 @@ fn bench_apply_deltas_with_multiple_dates(b: &mut Bencher) {
 
     let mut date: Date = *DATE;
 
-    for delta_chunk in deltas.chunks(10) {
+    for delta_chunk in deltas.chunks(100) {
         ENGINE
             .store_deltas(&NAME, &DeltaScope::date(date), delta_chunk.to_vec())
             .unwrap();

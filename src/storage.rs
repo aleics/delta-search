@@ -23,6 +23,8 @@ const DELTAS_DB_NAME: &str = "deltas";
 
 const ALL_ITEMS_KEY: &str = "__all";
 
+const MAX_STORAGE_SIZE: usize = 100 * 1024 * 1024 * 1024; // 100 GB max size
+
 pub(crate) fn position_to_id(position: u32) -> DataItemId {
     u64::from(position)
 }
@@ -206,8 +208,8 @@ impl EntityStorage {
 
         let env = unsafe {
             EnvOpenOptions::new()
-                .map_size(100 * 1024 * 1024) // 100 MB max size
-                .max_dbs(3000)
+                .map_size(MAX_STORAGE_SIZE)
+                .max_dbs(4)
                 .open(path)?
         };
 
