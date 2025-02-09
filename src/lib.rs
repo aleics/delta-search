@@ -805,13 +805,19 @@ mod tests {
                     "name".to_string(),
                     BTreeMap::from_iter([
                         ("Cristiano Ronaldo".to_string(), 1),
+                        ("David".to_string(), 0),
+                        ("Lionel Messi".to_string(), 1),
                         ("Michael Jordan".to_string(), 1),
-                        ("Lionel Messi".to_string(), 1)
+                        ("Roger".to_string(), 0),
                     ]),
                 ),
                 FilterOption::new(
                     "score".to_string(),
-                    BTreeMap::from_iter([("9".to_string(), 2), ("10".to_string(), 1)]),
+                    BTreeMap::from_iter([
+                        ("5".to_string(), 0),
+                        ("9".to_string(), 2),
+                        ("10".to_string(), 1)
+                    ]),
                 ),
                 FilterOption::new(
                     "sport".to_string(),

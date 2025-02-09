@@ -767,10 +767,7 @@ impl<T: Ord + Clone> SortableIndex<T> {
         let mut counts = Vec::new();
 
         for (value, bitmap) in &self.0 {
-            let count = bitmap.intersection_len(items);
-            if count > 0 {
-                counts.push((value, count));
-            }
+            counts.push((value, bitmap.intersection_len(items)))
         }
 
         counts
