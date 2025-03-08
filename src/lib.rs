@@ -767,7 +767,7 @@ mod tests {
         // when
         let mut filter_options = runner
             .engine
-            .options(OptionsQueryExecution::new().for_entity(runner.name.clone()))
+            .options(OptionsQueryExecution::parse_query(&format!("FROM {}", &runner.name)).unwrap())
             .unwrap();
 
         // then

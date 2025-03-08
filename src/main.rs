@@ -17,15 +17,11 @@ use delta_search::data::{
 };
 use delta_search::index::TypeDescriptor;
 use delta_search::query::{
-    CompositeFilter, DeltaChange, DeltaScope, FilterOption, OptionsQueryExecution, Pagination,
-    QueryExecution, Sort, SortDirection,
+    DeltaChange, DeltaScope, FilterOption, OptionsQueryExecution, QueryExecution,
 };
 use delta_search::storage::CreateFieldIndex;
 use delta_search::{Engine, EngineError};
 use tracing::{error, info};
-
-const DEFAULT_START_PAGE: usize = 0;
-const DEFAULT_PAGE_SIZE: usize = 500;
 
 #[derive(Clone)]
 struct App {
@@ -103,38 +99,14 @@ impl App {
     }
 
     fn build_query_execution(input: QueryInput) -> Result<QueryExecution, AppError> {
-        let mut execution = QueryExecution::new().for_entity(input.entity.clone());
-
-        if let Some(filter) = &input.filter {
-            let parsed_filter =
-                CompositeFilter::parse(filter).map_err(|_| AppError::InvalidFilterQuery)?;
-            execution = execution.with_filter(parsed_filter);
-        }
-
-        if let Some(sort) = &input.sort {
-            let direction = match sort.direction {
-                SortDirectionInput::Asc => SortDirection::ASC,
-                SortDirectionInput::Desc => SortDirection::DESC,
-            };
-
-            execution = execution.with_sort(Sort::new(&sort.by).with_direction(direction));
-        }
-
-        let pagination = input
-            .page
-            .map(|page| {
-                Pagination::new(
-                    page.start.unwrap_or(DEFAULT_START_PAGE),
-                    page.size.unwrap_or(DEFAULT_PAGE_SIZE),
-                )
-            })
-            .unwrap_or(Pagination::new(DEFAULT_START_PAGE, DEFAULT_PAGE_SIZE));
+        let mut execution =
+            QueryExecution::parse_query(&input.query).map_err(|_| AppError::InvalidFilterQuery)?;
 
         if let Some(scope) = input.scope {
             execution = execution.with_scope(scope.map_delta_scope()?);
         }
 
-        Ok(execution.with_pagination(pagination))
+        Ok(execution)
     }
 
     fn options(&self, input: QueryOptionsInput) -> Result<Vec<FilterOption>, AppError> {
@@ -149,13 +121,8 @@ impl App {
     fn build_options_execution(
         input: QueryOptionsInput,
     ) -> Result<OptionsQueryExecution, AppError> {
-        let mut execution = OptionsQueryExecution::new().for_entity(input.entity);
-
-        if let Some(filter) = &input.filter {
-            let parsed_filter =
-                CompositeFilter::parse(filter).map_err(|_| AppError::InvalidFilterQuery)?;
-            execution = execution.with_filter(parsed_filter);
-        }
+        let mut execution = OptionsQueryExecution::parse_query(&input.query)
+            .map_err(|_| AppError::InvalidFilterQuery)?;
 
         if let Some(scope) = input.scope {
             execution = execution.with_scope(scope.map_delta_scope()?);
@@ -367,8 +334,7 @@ async fn bulk_add_deltas(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryOptionsInput {
-    entity: String,
-    filter: Option<String>,
+    query: String,
     scope: Option<DeltaScopeInput>,
 }
 
@@ -409,32 +375,8 @@ async fn create_index(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryInput {
-    entity: String,
-    filter: Option<String>,
-    sort: Option<SortInput>,
-    page: Option<PageInput>,
+    query: String,
     scope: Option<DeltaScopeInput>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SortInput {
-    by: String,
-    direction: SortDirectionInput,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum SortDirectionInput {
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PageInput {
-    start: Option<usize>,
-    size: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
