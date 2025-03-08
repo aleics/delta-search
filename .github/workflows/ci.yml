@@ -66,10 +66,6 @@ jobs:
       - name: start container
         run: docker compose up -d
 
-      - name: wait for init
-        run: sleep 30s
-        shell: bash
-
       - name: run integration tests
         uses: actions-rs/cargo@v1
         with:
