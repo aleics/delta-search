@@ -5,3 +5,7 @@ services:
       dockerfile: ./Dockerfile
     ports:
       - "3000:3000"
+    volumes:
+      - delta-db:/var/local/delta-db
+volumes:
+  delta-db:

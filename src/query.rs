@@ -137,6 +137,7 @@ impl QueryIndices {
 
 #[derive(Default)]
 pub struct OptionsQueryExecution {
+    pub(crate) entity: String,
     filter: Option<CompositeFilter>,
     scope: Option<DeltaScope>,
     ref_fields: Option<Vec<String>>,
@@ -145,6 +146,11 @@ pub struct OptionsQueryExecution {
 impl OptionsQueryExecution {
     pub fn new() -> Self {
         OptionsQueryExecution::default()
+    }
+
+    pub fn for_entity(mut self, entity: String) -> Self {
+        self.entity = entity;
+        self
     }
 
     pub fn with_filter(mut self, filter: CompositeFilter) -> Self {
@@ -185,6 +191,7 @@ impl OptionsQueryExecution {
 
 #[derive(Default)]
 pub struct QueryExecution {
+    pub(crate) entity: String,
     filter: Option<CompositeFilter>,
     sort: Option<Sort>,
     scope: Option<DeltaScope>,
@@ -195,6 +202,11 @@ pub struct QueryExecution {
 impl QueryExecution {
     pub fn new() -> Self {
         QueryExecution::default()
+    }
+
+    pub fn for_entity(mut self, entity: String) -> Self {
+        self.entity = entity;
+        self
     }
 
     pub fn with_filter(mut self, filter: CompositeFilter) -> Self {
@@ -270,6 +282,8 @@ impl QueryExecution {
     }
 }
 
+/// A composite filter allows to combine multiple filter expressions using
+/// logical conjunction.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CompositeFilter {
     And(Vec<CompositeFilter>),
@@ -418,12 +432,15 @@ impl Sort {
     }
 }
 
+/// A single filter expression with a `name` identifying the field to match
+/// the filter against, and the filter operation.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Filter {
     name: String,
     operation: FilterOperation,
 }
 
+/// A filter operation collects all the available filter operations.
 #[derive(Debug, PartialEq, Clone)]
 pub enum FilterOperation {
     Eq(FieldValue),

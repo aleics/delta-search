@@ -37,20 +37,21 @@ fn main() -> Result<(), Error> {
 
     let engine = Engine::with_entities(vec![entity]);
 
-    let filter_options = engine.options(name, OptionsQueryExecution::new());
+    let filter_options = engine.options(OptionsQueryExecution::new().for_entity(name.to_string()));
 
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
     let query = QueryExecution::new()
+        .for_entity(name.to_string())
         .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
-    let players = engine.query(name, query);
+    let players = engine.query(query);
 
     println!("Basketball players sorted by score:\n{:?}\n", players);
 
     let players = engine.query(
-        name,
         QueryExecution::new()
+            .for_entity(name.to_string())
             .with_filter(CompositeFilter::parse(
                 "birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\"",
             )?)
@@ -71,6 +72,7 @@ fn main() -> Result<(), Error> {
         .unwrap();
 
     let query = QueryExecution::new()
+        .for_entity(name.to_string())
         .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
         .with_scope(DeltaScope::date(Date::from_calendar_date(
@@ -79,7 +81,7 @@ fn main() -> Result<(), Error> {
             1,
         )?));
 
-    let players = engine.query(name, query)?;
+    let players = engine.query(query)?;
 
     println!(
         "Basketball players sorted by score after switching sports in 2023:\n{:?}\n",
@@ -96,13 +98,14 @@ fn main() -> Result<(), Error> {
     engine.store_deltas(name, &delta_scope, lower_scores)?;
 
     let query = QueryExecution::new()
+        .for_entity(name.to_string())
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
         .with_scope(DeltaScope::context(
             0,
             Date::from_calendar_date(2024, Month::January, 1)?,
         ));
 
-    let players = engine.query(name, query)?;
+    let players = engine.query(query)?;
 
     println!(
         "Players sorted by score after decreasing their score by 1:\n{:?}\n",
@@ -112,8 +115,9 @@ fn main() -> Result<(), Error> {
     engine.remove(name, &david_id)?;
 
     let players = engine.query(
-        name,
-        QueryExecution::new().with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
+        QueryExecution::new()
+            .for_entity(name.to_string())
+            .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
     )?;
 
     println!(

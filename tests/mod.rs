@@ -1,11 +1,6 @@
 #[cfg(test)]
 mod integration_tests {
-    use lazy_static::lazy_static;
     use reqwest::{Client, StatusCode};
-
-    lazy_static! {
-        static ref CLIENT: Client = Client::new();
-    }
 
     #[tokio::test]
     async fn test_simple() {
@@ -22,7 +17,7 @@ mod integration_tests {
         create_index(entity_name).await;
 
         // gets options
-        reads_filter_options(entity_name).await;
+        reads_all_filter_options(entity_name).await;
 
         // executes query
         executes_query(entity_name).await;
@@ -32,6 +27,9 @@ mod integration_tests {
 
         // executes query with deltas
         executes_query_with_deltas(entity_name).await;
+
+        // gets options with deltas
+        reads_filter_options_with_deltas(entity_name).await;
     }
 
     #[tokio::test]
@@ -53,6 +51,9 @@ mod integration_tests {
 
         // executes query with deltas
         executes_query_with_deltas_from_multiple_contexts(entity_name).await;
+
+        // gets options with deltas
+        reads_filter_options_with_deltas_from_multiple_contexts(entity_name).await;
     }
 
     async fn create_entity(name: &str) {
@@ -60,7 +61,7 @@ mod integration_tests {
         let payload = r#"{}"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .post(format!("http://127.0.0.1:3000/entities/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -110,7 +111,7 @@ mod integration_tests {
         }"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .put(format!("http://127.0.0.1:3000/data/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -130,7 +131,7 @@ mod integration_tests {
         }"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .put(format!("http://127.0.0.1:3000/indices/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -142,10 +143,18 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn reads_filter_options(name: &str) {
+    async fn reads_all_filter_options(name: &str) {
         // when
-        let response = CLIENT
-            .get(format!("http://127.0.0.1:3000/indices/{}/options", name))
+        let payload = format!(
+            r#"{{
+                "entity": "{name}"
+            }}"#
+        );
+
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/options")
+            .header("Content-Type", "application/json")
+            .body(payload)
             .send()
             .await
             .unwrap();
@@ -173,21 +182,24 @@ mod integration_tests {
 
     async fn executes_query(name: &str) {
         // given
-        let payload = r#"{
-            "filter": "score > 2",
-            "sort": {
-                "by": "score",
-                "direction": "desc"
-            },
-            "page": {
-                "start": 0,
-                "size": 10
-            }
-        }"#;
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score > 2",
+                "sort": {{
+                    "by": "score",
+                    "direction": "desc"
+                }},
+                "page": {{
+                    "start": 0,
+                    "size": 10
+                }}
+            }}"#
+        );
 
         // when
-        let response = CLIENT
-            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/search")
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -256,7 +268,7 @@ mod integration_tests {
         }"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .post(format!("http://127.0.0.1:3000/deltas/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -270,17 +282,20 @@ mod integration_tests {
 
     async fn executes_query_with_deltas(name: &str) {
         // given
-        let payload = r#"{
-            "filter": "score < 7",
-            "scope": {
-                "context": 0,
-                "date": "2020-01-01"
-            }
-        }"#;
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score < 7",
+                "scope": {{
+                    "context": 0,
+                    "date": "2020-01-01"
+                }}
+            }}"#
+        );
 
         // when
-        let response = CLIENT
-            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/search")
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -312,6 +327,49 @@ mod integration_tests {
         );
     }
 
+    async fn reads_filter_options_with_deltas(name: &str) {
+        // when
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score < 7",
+                "scope": {{
+                    "context": 0,
+                    "date": "2020-01-01"
+                }}
+            }}"#
+        );
+
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/options")
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"[
+                    {
+                        "field": "score",
+                        "values": {
+                            "6": 1,
+                            "8.7": 0,
+                            "9": 0,
+                            "9.5": 0
+                        }
+                    }
+                ]"#
+            )
+        );
+    }
+
     async fn adds_deltas_different_contexts(name: &str) {
         // given
         let payload = r#"{
@@ -329,7 +387,7 @@ mod integration_tests {
         }"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .post(format!("http://127.0.0.1:3000/deltas/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -356,7 +414,7 @@ mod integration_tests {
         }"#;
 
         // when
-        let response = CLIENT
+        let response = Client::new()
             .post(format!("http://127.0.0.1:3000/deltas/{}", name))
             .header("Content-Type", "application/json")
             .body(payload)
@@ -370,17 +428,20 @@ mod integration_tests {
 
     async fn executes_query_with_deltas_from_multiple_contexts(name: &str) {
         // given
-        let payload = r#"{
-            "filter": "score < 7",
-            "scope": {
-                "context": 0,
-                "date": "2020-01-01"
-            }
-        }"#;
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score < 7",
+                "scope": {{
+                    "context": 0,
+                    "date": "2020-01-01"
+                }}
+            }}"#
+        );
 
         // when
-        let response = CLIENT
-            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/search")
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -412,17 +473,20 @@ mod integration_tests {
         );
 
         // given
-        let payload = r#"{
-            "filter": "score < 7",
-            "scope": {
-                "context": 1,
-                "date": "2020-01-01"
-            }
-        }"#;
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score < 7",
+                "scope": {{
+                    "context": 1,
+                    "date": "2020-01-01"
+                }}
+            }}"#
+        );
 
         // when
-        let response = CLIENT
-            .post(format!("http://127.0.0.1:3000/indices/{}/search", name))
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/search")
             .header("Content-Type", "application/json")
             .body(payload)
             .send()
@@ -450,6 +514,49 @@ mod integration_tests {
                         }
                     ]
                 }"#
+            )
+        );
+    }
+
+    async fn reads_filter_options_with_deltas_from_multiple_contexts(name: &str) {
+        // when
+        let payload = format!(
+            r#"{{
+                "entity": "{name}",
+                "filter": "score < 7",
+                "scope": {{
+                    "context": 1,
+                    "date": "2020-01-01"
+                }}
+            }}"#
+        );
+
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/options")
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"[
+                    {
+                        "field": "score",
+                        "values": {
+                            "5": 1,
+                            "8.7": 0,
+                            "9": 0,
+                            "9.5": 0
+                        }
+                    }
+                ]"#
             )
         );
     }

@@ -43,8 +43,8 @@ cargo run --release
  - `PUT /data/{entity_name}`: store or update data in bulk in an entity entry.
  - `POST /deltas/{entity_name}`: store deltas with a given context in an entity entry.
  - `PUT /indices/{entity_name}`: create a new index for a given property in an entity entry.
- - `GET /indices/{entity_name}/options`: list the filter options available for the faceted search.
- - `POST /indices/{entity_name}/search`: send a search query for a given entity.
+ - `POST /options`: list filter options given a search query.
+ - `POST /search`: send a search query.
 
 ## Motivation
 

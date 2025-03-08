@@ -52,12 +52,8 @@ impl Engine {
         Ok(())
     }
 
-    pub fn query(
-        &self,
-        name: &str,
-        execution: QueryExecution,
-    ) -> Result<Vec<DataItem>, EngineError> {
-        let items = if let Some(entity) = self.entities.pin().get(name) {
+    pub fn query(&self, execution: QueryExecution) -> Result<Vec<DataItem>, EngineError> {
+        let items = if let Some(entity) = self.entities.pin().get(&execution.entity) {
             execution.run(entity)?
         } else {
             Vec::new()
@@ -68,10 +64,9 @@ impl Engine {
 
     pub fn options(
         &self,
-        name: &str,
         execution: OptionsQueryExecution,
     ) -> Result<Vec<FilterOption>, EngineError> {
-        let options = if let Some(entity) = self.entities.pin().get(name) {
+        let options = if let Some(entity) = self.entities.pin().get(&execution.entity) {
             execution.run(entity)?
         } else {
             Vec::new()
@@ -182,7 +177,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -208,7 +207,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -232,7 +235,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -260,7 +267,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -286,7 +297,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -309,7 +324,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -332,7 +351,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -359,7 +382,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -386,7 +413,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -420,7 +451,11 @@ mod tests {
         // when
         let mut matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_filter(filter))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
             .unwrap();
 
         // then
@@ -459,12 +494,13 @@ mod tests {
 
         // when
         let execution = QueryExecution::new()
+            .for_entity(runner.name.clone())
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
             .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches = runner.engine.query(&runner.name, execution).unwrap();
+        let mut matches = runner.engine.query(execution).unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -509,12 +545,13 @@ mod tests {
 
         // when
         let execution = QueryExecution::new()
+            .for_entity(runner.name.clone())
             .with_filter(CompositeFilter::eq("sport", FieldValue::str("Football")))
             .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches = runner.engine.query(&runner.name, execution).unwrap();
+        let mut matches = runner.engine.query(execution).unwrap();
 
         // then
         matches.sort_by(|a, b| a.id.cmp(&b.id));
@@ -566,15 +603,13 @@ mod tests {
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
         let execution_without_context = QueryExecution::new()
+            .for_entity(runner.name.clone())
             .with_filter(filter.clone())
             .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches_without_context = runner
-            .engine
-            .query(&runner.name, execution_without_context)
-            .unwrap();
+        let mut matches_without_context = runner.engine.query(execution_without_context).unwrap();
 
         // then
         matches_without_context.sort_by(|a, b| a.id.cmp(&b.id));
@@ -586,16 +621,14 @@ mod tests {
 
         // when
         let execution_with_context = QueryExecution::new()
+            .for_entity(runner.name.clone())
             .with_filter(filter.clone())
             .with_scope(DeltaScope::context(
                 context,
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches_with_context = runner
-            .engine
-            .query(&runner.name, execution_with_context)
-            .unwrap();
+        let mut matches_with_context = runner.engine.query(execution_with_context).unwrap();
 
         // then
         matches_with_context.sort_by(|a, b| a.id.cmp(&b.id));
@@ -631,8 +664,8 @@ mod tests {
         let matches = runner
             .engine
             .query(
-                &runner.name,
                 QueryExecution::new()
+                    .for_entity(runner.name.clone())
                     .with_filter(filter)
                     .with_sort(sort)
                     .with_pagination(pagination),
@@ -667,7 +700,11 @@ mod tests {
         // when
         let matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_sort(sort))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_sort(sort),
+            )
             .unwrap();
 
         // then
@@ -697,7 +734,11 @@ mod tests {
         // when
         let matches = runner
             .engine
-            .query(&runner.name, QueryExecution::new().with_sort(sort))
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_sort(sort),
+            )
             .unwrap();
 
         // then
@@ -726,7 +767,7 @@ mod tests {
         // when
         let mut filter_options = runner
             .engine
-            .options(&runner.name, OptionsQueryExecution::new())
+            .options(OptionsQueryExecution::new().for_entity(runner.name.clone()))
             .unwrap();
 
         // then
@@ -785,8 +826,9 @@ mod tests {
         let mut filter_options = runner
             .engine
             .options(
-                &runner.name,
-                OptionsQueryExecution::new().with_filter(filter),
+                OptionsQueryExecution::new()
+                    .for_entity(runner.name.to_string())
+                    .with_filter(filter),
             )
             .unwrap();
 
@@ -843,11 +885,13 @@ mod tests {
         runner.engine.add(&runner.name, &ROGER).unwrap();
 
         // then
-        let query = QueryExecution::new().with_filter(CompositeFilter::eq(
-            "name",
-            FieldValue::String("Roger".to_string()),
-        ));
-        let matches = runner.engine.query(&runner.name, query).unwrap();
+        let query = QueryExecution::new()
+            .for_entity(runner.name.clone())
+            .with_filter(CompositeFilter::eq(
+                "name",
+                FieldValue::String("Roger".to_string()),
+            ));
+        let matches = runner.engine.query(query).unwrap();
 
         assert_eq!(matches, vec![ROGER.clone()]);
     }
@@ -868,11 +912,13 @@ mod tests {
             .unwrap();
 
         // then
-        let query = QueryExecution::new().with_filter(CompositeFilter::eq(
-            "name",
-            FieldValue::String("Cristiano Ronaldo".to_string()),
-        ));
-        let matches = runner.engine.query(&runner.name, query).unwrap();
+        let query = QueryExecution::new()
+            .for_entity(runner.name.clone())
+            .with_filter(CompositeFilter::eq(
+                "name",
+                FieldValue::String("Cristiano Ronaldo".to_string()),
+            ));
+        let matches = runner.engine.query(query).unwrap();
 
         assert!(matches.is_empty());
     }

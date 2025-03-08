@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{post, put};
 use axum::{response::Json, Router};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -92,18 +92,18 @@ impl App {
         Ok(())
     }
 
-    fn query(&self, name: &str, input: QueryIndexInput) -> Result<Vec<DataItemExternal>, AppError> {
+    fn query(&self, input: QueryInput) -> Result<Vec<DataItemExternal>, AppError> {
         let execution = Self::build_query_execution(input)?;
 
         self.inner
-            .query(name, execution)
+            .query(execution)
             .map(|items| items.into_iter().map(DataItemExternal::from_item).collect())
             .inspect_err(|err| error!("Query could not be executed: {}", err))
-            .map_err(|_| anyhow!("Query for entity `{}` could not be executed", name).into())
+            .map_err(|_| anyhow!("Query could not be executed").into())
     }
 
-    fn build_query_execution(input: QueryIndexInput) -> Result<QueryExecution, AppError> {
-        let mut execution = QueryExecution::new();
+    fn build_query_execution(input: QueryInput) -> Result<QueryExecution, AppError> {
+        let mut execution = QueryExecution::new().for_entity(input.entity.clone());
 
         if let Some(filter) = &input.filter {
             let parsed_filter =
@@ -137,11 +137,31 @@ impl App {
         Ok(execution.with_pagination(pagination))
     }
 
-    fn options(&self, name: &str) -> Result<Vec<FilterOption>, AppError> {
+    fn options(&self, input: QueryOptionsInput) -> Result<Vec<FilterOption>, AppError> {
+        let execution = Self::build_options_execution(input)?;
+
         self.inner
-            .options(name, OptionsQueryExecution::new())
+            .options(execution)
             .inspect_err(|err| error!("Could not create options: {}", err))
-            .map_err(|_| anyhow!("Could not create options for entity `{}`", name).into())
+            .map_err(|_| anyhow!("Could not create options").into())
+    }
+
+    fn build_options_execution(
+        input: QueryOptionsInput,
+    ) -> Result<OptionsQueryExecution, AppError> {
+        let mut execution = OptionsQueryExecution::new().for_entity(input.entity);
+
+        if let Some(filter) = &input.filter {
+            let parsed_filter =
+                CompositeFilter::parse(filter).map_err(|_| AppError::InvalidFilterQuery)?;
+            execution = execution.with_filter(parsed_filter);
+        }
+
+        if let Some(scope) = input.scope {
+            execution = execution.with_scope(scope.map_delta_scope()?);
+        }
+
+        Ok(execution)
     }
 
     fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
@@ -216,8 +236,8 @@ async fn main() -> Result<(), AppError> {
         // Index endpoints
         .route("/indices/{entity_name}", put(create_index))
         // Search endpoints
-        .route("/indices/{entity_name}/options", get(get_options))
-        .route("/indices/{entity_name}/search", post(query))
+        .route("/options", post(options))
+        .route("/search", post(query))
         .with_state(search_engine);
 
     info!("delta-search is running...");
@@ -241,7 +261,7 @@ struct BulkUpsertEntity {
     data: Vec<DataItemExternal>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DataItemExternal {
     id: DataItemId,
@@ -318,7 +338,7 @@ fn parse_date(string: &str) -> Result<Date, time::error::Parse> {
     Date::parse(string, &Iso8601::DEFAULT)
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeltaScopeInput {
     context: Option<u32>,
@@ -344,11 +364,19 @@ async fn bulk_add_deltas(
     Ok(Json(()))
 }
 
-async fn get_options(
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueryOptionsInput {
+    entity: String,
+    filter: Option<String>,
+    scope: Option<DeltaScopeInput>,
+}
+
+async fn options(
     State(search): State<App>,
-    Path(name): Path<String>,
+    Json(input): Json<QueryOptionsInput>,
 ) -> Result<Json<Vec<FilterOption>>, AppError> {
-    let options = search.options(&name)?;
+    let options = search.options(input)?;
     Ok(Json(options))
 }
 
@@ -378,37 +406,38 @@ async fn create_index(
     Ok(Json(()))
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct QueryIndexInput {
+struct QueryInput {
+    entity: String,
     filter: Option<String>,
     sort: Option<SortInput>,
     page: Option<PageInput>,
     scope: Option<DeltaScopeInput>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SortInput {
     by: String,
     direction: SortDirectionInput,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 enum SortDirectionInput {
     Asc,
     Desc,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PageInput {
     start: Option<usize>,
     size: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct QueryResponse {
     data: Vec<DataItemExternal>,
@@ -416,9 +445,8 @@ struct QueryResponse {
 
 async fn query(
     State(search): State<App>,
-    Path(name): Path<String>,
-    Json(input): Json<QueryIndexInput>,
+    Json(input): Json<QueryInput>,
 ) -> Result<Json<QueryResponse>, AppError> {
-    let data = search.query(&name, input)?;
+    let data = search.query(input)?;
     Ok(Json(QueryResponse { data }))
 }

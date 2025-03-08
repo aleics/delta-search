@@ -34,10 +34,11 @@ fn bench_filter_numeric_eq(b: &mut Bencher) {
     b.iter(move || {
         let filter = CompositeFilter::eq("score", FieldValue::dec(10.0));
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
 
@@ -47,10 +48,11 @@ fn bench_filter_numeric_between(b: &mut Bencher) {
         let filter =
             CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0));
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
 
@@ -62,10 +64,11 @@ fn bench_filter_or(b: &mut Bencher) {
             CompositeFilter::between("score", FieldValue::dec(0.0), FieldValue::dec(100.0)),
         ]);
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_filter(filter)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
 
@@ -74,17 +77,20 @@ fn bench_sort(b: &mut Bencher) {
     b.iter(move || {
         let sort = Sort::new("score").with_direction(SortDirection::DESC);
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_sort(sort)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
 
 #[bench]
 fn bench_filter_options(b: &mut Bencher) {
     b.iter(move || {
-        ENGINE.options(&NAME, OptionsQueryExecution::new()).unwrap();
+        ENGINE
+            .options(OptionsQueryExecution::new().for_entity(NAME.to_string()))
+            .unwrap();
     });
 }
 
@@ -102,10 +108,11 @@ fn bench_apply_deltas(b: &mut Bencher) {
         let scope = DeltaScope::date(DATE.next_day().unwrap());
 
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_scope(scope)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
 
@@ -130,9 +137,10 @@ fn bench_apply_deltas_with_multiple_dates(b: &mut Bencher) {
         let scope = DeltaScope::date(date.next_day().unwrap());
 
         let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
             .with_scope(scope)
             .with_pagination(*PAGINATION);
 
-        ENGINE.query(&NAME, query).unwrap();
+        ENGINE.query(query).unwrap();
     });
 }
