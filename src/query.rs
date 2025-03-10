@@ -135,17 +135,25 @@ impl QueryIndices {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct OptionsQueryExecution {
     pub(crate) entity: String,
     filter: Option<CompositeFilter>,
     scope: Option<DeltaScope>,
-    ref_fields: Option<Vec<String>>,
 }
 
 impl OptionsQueryExecution {
     pub fn new() -> Self {
         OptionsQueryExecution::default()
+    }
+
+    pub fn parse_query(query: &str) -> Result<Self, ParseError> {
+        let parsed = QueryParser::parse_query(query)?;
+        Ok(OptionsQueryExecution {
+            entity: parsed.entity,
+            filter: parsed.filter,
+            scope: None,
+        })
     }
 
     pub fn for_entity(mut self, entity: String) -> Self {
@@ -154,9 +162,6 @@ impl OptionsQueryExecution {
     }
 
     pub fn with_filter(mut self, filter: CompositeFilter) -> Self {
-        if let Some(ref_fields) = self.ref_fields.as_mut() {
-            ref_fields.append(&mut filter.get_referenced_fields());
-        }
         self.filter = Some(filter);
 
         self
@@ -168,14 +173,11 @@ impl OptionsQueryExecution {
     }
 
     pub fn run(self, storage: &EntityStorage) -> Result<Vec<FilterOption>, QueryError> {
-        // Read the indices from storage. In case no fields are referenced, use all indices
-        // as filter options.
-        let indices = match (self.ref_fields, &self.scope) {
-            (Some(fields), Some(scope)) => storage.read_indices_in(scope, fields.as_slice()),
-            (Some(fields), None) => storage.read_current_indices(fields.as_slice()),
-            (None, Some(scope)) => storage.read_all_indices_in(scope),
-            (None, None) => storage.read_all_current_indices(),
-        }?;
+        // Read the indices from storage.
+        let indices = match &self.scope {
+            Some(scope) => storage.read_all_indices_in(scope)?,
+            None => storage.read_all_current_indices()?,
+        };
 
         let indices = QueryIndices::new(indices);
 
@@ -195,13 +197,34 @@ pub struct QueryExecution {
     filter: Option<CompositeFilter>,
     sort: Option<Sort>,
     scope: Option<DeltaScope>,
-    pagination: Option<Pagination>,
+    pagination: Pagination,
     ref_fields: Vec<String>,
 }
 
 impl QueryExecution {
     pub fn new() -> Self {
         QueryExecution::default()
+    }
+
+    pub fn parse_query(query: &str) -> Result<Self, ParseError> {
+        let parsed = QueryParser::parse_query(query)?;
+
+        let mut ref_fields = Vec::new();
+        if let Some(filter) = parsed.filter.as_ref() {
+            ref_fields.extend(filter.get_referenced_fields());
+        }
+        if let Some(sort) = parsed.sort.as_ref() {
+            ref_fields.extend(sort.get_referenced_fields());
+        }
+
+        Ok(QueryExecution {
+            entity: parsed.entity,
+            filter: parsed.filter,
+            sort: parsed.sort,
+            scope: None,
+            pagination: parsed.pagination,
+            ref_fields,
+        })
     }
 
     pub fn for_entity(mut self, entity: String) -> Self {
@@ -222,7 +245,7 @@ impl QueryExecution {
     }
 
     pub fn with_pagination(mut self, pagination: Pagination) -> Self {
-        self.pagination = Some(pagination);
+        self.pagination = pagination;
         self
     }
 
@@ -251,14 +274,10 @@ impl QueryExecution {
         let sorted_ids = self.sort(filter_result, &indices)?;
 
         // Apply pagination
-        let pagination = self
-            .pagination
-            .unwrap_or(Pagination::new(0, sorted_ids.len()));
-
         let paginated_ids = sorted_ids
             .iter()
-            .skip(pagination.start)
-            .take(pagination.size);
+            .skip(self.pagination.start)
+            .take(self.pagination.size);
 
         // Read from the database the data of the paginated result
         storage
@@ -293,10 +312,6 @@ pub enum CompositeFilter {
 }
 
 impl CompositeFilter {
-    pub fn parse(query: &str) -> Result<CompositeFilter, ParseError> {
-        FilterParser::parse_query(query)
-    }
-
     pub fn eq(name: &str, value: FieldValue) -> Self {
         CompositeFilter::Single(Filter {
             name: name.to_string(),
@@ -392,7 +407,10 @@ impl FilterResult {
     }
 }
 
-#[derive(Copy, Clone)]
+pub const DEFAULT_START_PAGE: usize = 0;
+pub const DEFAULT_PAGE_SIZE: usize = 500;
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Pagination {
     start: usize,
     size: usize,
@@ -404,11 +422,19 @@ impl Pagination {
     }
 }
 
+impl Default for Pagination {
+    fn default() -> Self {
+        Pagination::new(DEFAULT_START_PAGE, DEFAULT_PAGE_SIZE)
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum SortDirection {
     ASC,
     DESC,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Sort {
     by: String,
     direction: SortDirection,
@@ -491,39 +517,178 @@ impl DeltaChange {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct ParsedQuery {
+    entity: String,
+    filter: Option<CompositeFilter>,
+    sort: Option<Sort>,
+    pagination: Pagination,
+}
+
 #[derive(pest_derive::Parser)]
 #[grammar_inline = r#"
     WHITESPACE = _{ " " }
-    NAME_CHAR  = _{ ASCII_ALPHA | "." | "_" }
-    name       =  { NAME_CHAR+ }
+    NAME_CHAR  = _{ ASCII_ALPHA | ASCII_DIGIT | "." | "_" }
+    name       = @{ NAME_CHAR+ }
     number     = @{ "-"? ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) ~ ("." ~ ASCII_DIGIT*)? ~ (^"e" ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
     string     = ${ "\"" ~ char* ~ "\"" }
-    char       = {
+    char       =  {
         !("\"" | "\\") ~ ANY
-        | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
-        | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+      | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
+      | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
     }
-    boolean    =  { "true" | "false" }
+    boolean    =  { ^"TRUE" | ^"FALSE" }
     array      =  { "[" ~ "]" | "[" ~ value ~ ("," ~ value)* ~ "]" }
     value      =  { number | string | boolean | array }
 
     comparison_operator = { "=" | "!=" | ">=" | "<=" | ">" | "<" }
-    logical_operator    = { "&&" | "||" }
+    logical_operator    = { ^"AND" | ^"OR" }
 
-    statement = { "("{0, 1} ~ name ~ SPACE_SEPARATOR* ~ comparison_operator ~ value ~ ")"{0, 1} }
-    composite = { "("{0, 1} ~ statement ~ logical_operator* ~ composite* ~ ")"{0, 1} }
+    ASC  = { ^"ASC" }
+    DESC = { ^"DESC" }
+
+    FROM     = { ^"FROM" ~ name }
+    WHERE    = { ^"WHERE" ~ composite }
+    ORDER_BY = { ^"ORDER BY" ~ name ~ (ASC | DESC)? }
+    LIMIT    = { ^"LIMIT" ~ number }
+    OFFSET   = { ^"OFFSET" ~ number }
+
+    statement = { "("{0, 1} ~ name ~ comparison_operator ~ value ~ ")"{0, 1} }
+    composite = { "("{0, 1} ~ statement ~ (logical_operator ~ composite)* ~ ")"{0, 1} }
+
+    // Allow any order of OFFSET and LIMIT
+    query     = { FROM ~ WHERE? ~ ORDER_BY? ~ OFFSET? ~ LIMIT? ~ OFFSET?  }
 "#]
-pub(crate) struct FilterParser;
+pub(crate) struct QueryParser;
 
-impl FilterParser {
-    pub fn parse_query(input: &str) -> Result<CompositeFilter, ParseError> {
-        let mut pairs = Self::parse(Rule::composite, input)
+impl QueryParser {
+    pub(crate) fn parse_query(input: &str) -> Result<ParsedQuery, ParseError> {
+        let mut pairs = Self::parse(Rule::query, input)
             .map_err(|err| ParseError::QueryParse(err.line().to_string()))?;
+
         let query_pair = pairs.next().ok_or(ParseError::EmptyQuery)?;
-        Self::parse_statement(query_pair)
+        let mut pairs = query_pair.into_inner();
+
+        let from_pair = pairs.next().ok_or(ParseError::InvalidQuery(
+            "query must start with a FROM statement",
+        ))?;
+
+        let entity = Self::parse_from(from_pair)?;
+        let mut filter = None;
+        let mut sort = None;
+        let mut start = None;
+        let mut size = None;
+
+        for pair in pairs {
+            match pair.as_rule() {
+                Rule::WHERE => {
+                    filter = Self::parse_where(pair)?;
+                }
+                Rule::ORDER_BY => {
+                    sort = Self::parse_sort(pair)?;
+                }
+                Rule::LIMIT => {
+                    let mut inner = pair.into_inner();
+                    size = if let Some(limit) = inner.next() {
+                        Some(limit.as_str().parse::<usize>().map_err(|_| {
+                            ParseError::InvalidQuery("expected numeric value after LIMIT statement")
+                        })?)
+                    } else {
+                        None
+                    };
+                }
+                Rule::OFFSET => {
+                    let mut inner = pair.into_inner();
+                    start = if let Some(offset) = inner.next() {
+                        Some(offset.as_str().parse::<usize>().map_err(|_| {
+                            ParseError::InvalidQuery(
+                                "expected numeric value after OFFSET statement",
+                            )
+                        })?)
+                    } else {
+                        None
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        let pagination = Pagination::new(
+            start.unwrap_or(DEFAULT_START_PAGE),
+            size.unwrap_or(DEFAULT_PAGE_SIZE),
+        );
+
+        Ok(ParsedQuery {
+            entity,
+            filter,
+            sort,
+            pagination,
+        })
     }
 
-    fn parse_statement(pair: Pair<Rule>) -> Result<CompositeFilter, ParseError> {
+    fn parse_from(pair: Pair<Rule>) -> Result<String, ParseError> {
+        if let Rule::FROM = pair.as_rule() {
+            let mut inner = pair.into_inner();
+
+            let entity = inner
+                .next()
+                .ok_or(ParseError::InvalidQuery(
+                    "expected entity name in FROM statement",
+                ))?
+                .as_str()
+                .to_string();
+
+            return Ok(entity);
+        }
+
+        Err(ParseError::InvalidQuery(
+            "query must start with a FROM statement",
+        ))
+    }
+
+    fn parse_where(pair: Pair<Rule>) -> Result<Option<CompositeFilter>, ParseError> {
+        if let Rule::WHERE = pair.as_rule() {
+            let mut inner = pair.into_inner();
+
+            let filter_statement = inner.next().ok_or(ParseError::InvalidQuery(
+                "expected filter after WHERE statement",
+            ))?;
+
+            let filter = Self::parse_filter_statement(filter_statement)?;
+            return Ok(Some(filter));
+        }
+
+        Ok(None)
+    }
+
+    fn parse_sort(pair: Pair<Rule>) -> Result<Option<Sort>, ParseError> {
+        if let Rule::ORDER_BY = pair.as_rule() {
+            let mut inner = pair.into_inner();
+
+            let by = inner
+                .next()
+                .ok_or(ParseError::InvalidQuery(
+                    "expected field in ORDER BY statement",
+                ))?
+                .as_str();
+
+            let mut sort = Sort::new(by);
+
+            if let Some(direction) = inner.next() {
+                sort = match direction.as_rule() {
+                    Rule::ASC => sort.with_direction(SortDirection::ASC),
+                    Rule::DESC => sort.with_direction(SortDirection::DESC),
+                    _ => unreachable!(),
+                };
+            }
+
+            return Ok(Some(sort));
+        }
+
+        Ok(None)
+    }
+
+    fn parse_filter_statement(pair: Pair<Rule>) -> Result<CompositeFilter, ParseError> {
         match pair.as_rule() {
             Rule::WHITESPACE
             | Rule::NAME_CHAR
@@ -535,7 +700,15 @@ impl FilterParser {
             | Rule::array
             | Rule::value
             | Rule::comparison_operator
-            | Rule::logical_operator => unreachable!(),
+            | Rule::logical_operator
+            | Rule::FROM
+            | Rule::WHERE
+            | Rule::ORDER_BY
+            | Rule::LIMIT
+            | Rule::OFFSET
+            | Rule::ASC
+            | Rule::DESC
+            | Rule::query => unreachable!(),
             Rule::statement => {
                 let mut inner = pair.into_inner();
 
@@ -577,20 +750,20 @@ impl FilterParser {
                 ))?;
 
                 let Some(operator) = inner.next() else {
-                    return Self::parse_statement(left);
+                    return Self::parse_filter_statement(left);
                 };
 
                 let right = inner.next().ok_or(ParseError::InvalidQuery(
                     "expected right statement in composite rule",
                 ))?;
 
-                let left = Self::parse_statement(left)?;
-                let right = Self::parse_statement(right)?;
+                let left = Self::parse_filter_statement(left)?;
+                let right = Self::parse_filter_statement(right)?;
 
                 let operator = operator.as_str();
                 match operator {
-                    "&&" => Ok(CompositeFilter::And(vec![left, right])),
-                    "||" => Ok(CompositeFilter::Or(vec![left, right])),
+                    "AND" => Ok(CompositeFilter::And(vec![left, right])),
+                    "OR" => Ok(CompositeFilter::Or(vec![left, right])),
                     _ => Err(ParseError::UnknownOperator),
                 }
             }
@@ -606,7 +779,15 @@ impl FilterParser {
             | Rule::comparison_operator
             | Rule::logical_operator
             | Rule::statement
-            | Rule::composite => unreachable!(),
+            | Rule::composite
+            | Rule::FROM
+            | Rule::WHERE
+            | Rule::ORDER_BY
+            | Rule::LIMIT
+            | Rule::OFFSET
+            | Rule::ASC
+            | Rule::DESC
+            | Rule::query => unreachable!(),
             Rule::value => {
                 let value = pair
                     .into_inner()
@@ -671,68 +852,228 @@ pub enum ParseError {
 #[cfg(test)]
 mod tests {
     use crate::data::FieldValue;
-    use crate::query::{CompositeFilter, FilterParser};
+    use crate::query::{
+        CompositeFilter, Pagination, ParsedQuery, QueryParser, Sort, SortDirection,
+        DEFAULT_PAGE_SIZE, DEFAULT_START_PAGE,
+    };
 
     #[test]
-    fn creates_string_filter() {
+    fn creates_skeleton_query() {
         // given
-        let input = "person.name = \"David\"";
+        let input = "FROM person";
 
         // when
-        let result = FilterParser::parse_query(input).unwrap();
+        let result = QueryParser::parse_query(input).unwrap();
 
         // then
         assert_eq!(
             result,
-            CompositeFilter::eq("person.name", FieldValue::str("David"))
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: None,
+                sort: None,
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
+    fn creates_string_filter() {
+        // given
+        let input = "FROM person WHERE person.name = \"David\"";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: None,
+                pagination: Pagination::default()
+            }
         )
     }
 
     #[test]
     fn creates_date_filter() {
         // given
-        let input = "person.birth_date < \"2020-01-01\"";
+        let input = "FROM person WHERE person.birth_date < \"2020-01-01\"";
 
         // when
-        let result = FilterParser::parse_query(input);
+        let result = QueryParser::parse_query(input).unwrap();
 
         // then
         assert_eq!(
             result,
-            Ok(CompositeFilter::lt(
-                "person.birth_date",
-                FieldValue::str("2020-01-01")
-            ))
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::lt(
+                    "person.birth_date",
+                    FieldValue::str("2020-01-01")
+                )),
+                sort: None,
+                pagination: Pagination::default()
+            }
         )
     }
 
     #[test]
     fn creates_complex_filter() {
         // given
-        let input = "(person.name != \"Michael Jordan\") && (score > 1 || active = true && (person.name.simple = \"Roger\" || score <= 5))";
+        let input = "FROM person WHERE (person.name != \"Michael Jordan\") AND (score > 1 OR active = true AND (person.name.simple = \"Roger\" OR score <= 5))";
 
         // when
-        let result = FilterParser::parse_query(input).unwrap();
+        let result = QueryParser::parse_query(input).unwrap();
 
         // then
         assert_eq!(
             result,
-            CompositeFilter::and(vec![
-                CompositeFilter::negate(CompositeFilter::eq(
-                    "person.name",
-                    FieldValue::str("Michael Jordan")
-                )),
-                CompositeFilter::or(vec![
-                    CompositeFilter::gt("score", FieldValue::dec(1.0)),
-                    CompositeFilter::and(vec![
-                        CompositeFilter::eq("active", FieldValue::bool(true)),
-                        CompositeFilter::or(vec![
-                            CompositeFilter::eq("person.name.simple", FieldValue::str("Roger")),
-                            CompositeFilter::le("score", FieldValue::dec(5.0)),
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::and(vec![
+                    CompositeFilter::negate(CompositeFilter::eq(
+                        "person.name",
+                        FieldValue::str("Michael Jordan")
+                    )),
+                    CompositeFilter::or(vec![
+                        CompositeFilter::gt("score", FieldValue::dec(1.0)),
+                        CompositeFilter::and(vec![
+                            CompositeFilter::eq("active", FieldValue::bool(true)),
+                            CompositeFilter::or(vec![
+                                CompositeFilter::eq("person.name.simple", FieldValue::str("Roger")),
+                                CompositeFilter::le("score", FieldValue::dec(5.0)),
+                            ])
                         ])
                     ])
-                ])
-            ])
+                ])),
+                sort: None,
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by() {
+        // given
+        let input = "FROM person WHERE person.name = \"David\" ORDER BY person.score";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score")),
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by_desc() {
+        // given
+        let input = "FROM person WHERE person.name = \"David\" ORDER BY person.score DESC";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::DESC)),
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by_desc_limit() {
+        // given
+        let input = "FROM person WHERE person.name = \"David\" ORDER BY person.score DESC LIMIT 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::DESC)),
+                pagination: Pagination::new(DEFAULT_START_PAGE, 10)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by_asc_offset() {
+        // given
+        let input = "FROM person WHERE person.name = \"David\" ORDER BY person.score ASC OFFSET 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                pagination: Pagination::new(10, DEFAULT_PAGE_SIZE)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by_offset_limit() {
+        // given
+        let input =
+            "FROM person WHERE person.name = \"David\" ORDER BY person.score OFFSET 10 LIMIT 20";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                pagination: Pagination::new(10, 20)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_order_by_limit_offset() {
+        // given
+        let input =
+            "FROM person WHERE person.name = \"David\" ORDER BY person.score LIMIT 20 OFFSET 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                pagination: Pagination::new(10, 20)
+            }
         )
     }
 }

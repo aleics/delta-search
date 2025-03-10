@@ -3,9 +3,7 @@ use delta_search::fixtures::{
     create_players_storage, cristiano_ronaldo, david, lionel_messi, michael_jordan, roger,
     DecreaseScoreDelta, Sport, SwitchSportsDelta,
 };
-use delta_search::query::{
-    CompositeFilter, DeltaScope, OptionsQueryExecution, QueryExecution, Sort, SortDirection,
-};
+use delta_search::query::{DeltaScope, OptionsQueryExecution, QueryExecution, Sort, SortDirection};
 use delta_search::Engine;
 use time::{Date, Month};
 
@@ -41,21 +39,17 @@ fn main() -> Result<(), Error> {
 
     println!("Filter possibilities:\n{:?}\n", filter_options);
 
-    let query = QueryExecution::new()
-        .for_entity(name.to_string())
-        .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
-        .with_sort(Sort::new("score").with_direction(SortDirection::DESC));
+    let query = QueryExecution::parse_query(&format!(
+        "FROM {name} WHERE sport = \"Basketball\" ORDER BY score DESC"
+    ))?;
     let players = engine.query(query);
 
     println!("Basketball players sorted by score:\n{:?}\n", players);
 
     let players = engine.query(
-        QueryExecution::new()
-            .for_entity(name.to_string())
-            .with_filter(CompositeFilter::parse(
-                "birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\"",
-            )?)
-            .with_sort(Sort::new("name").with_direction(SortDirection::ASC)),
+        QueryExecution::parse_query(&format!(
+            "FROM {name} WHERE birth_date >= \"1980-01-01\" && birth_date <= \"1989-12-31\" ORDER BY name ASC"
+        ))?
     );
 
     println!("Players born in the 80s:\n{:?}\n", players);
@@ -71,15 +65,14 @@ fn main() -> Result<(), Error> {
         .store_deltas(name, &delta_scope, switch_sports)
         .unwrap();
 
-    let query = QueryExecution::new()
-        .for_entity(name.to_string())
-        .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?)
-        .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_scope(DeltaScope::date(Date::from_calendar_date(
-            2024,
-            Month::January,
-            1,
-        )?));
+    let query = QueryExecution::parse_query(&format!(
+        "FROM {name} WHERE sport = \"Basketball\" ORDER BY score DESC"
+    ))?
+    .with_scope(DeltaScope::date(Date::from_calendar_date(
+        2024,
+        Month::January,
+        1,
+    )?));
 
     let players = engine.query(query)?;
 
@@ -114,11 +107,9 @@ fn main() -> Result<(), Error> {
 
     engine.remove(name, &david_id)?;
 
-    let players = engine.query(
-        QueryExecution::new()
-            .for_entity(name.to_string())
-            .with_filter(CompositeFilter::parse("sport = \"Basketball\"")?),
-    )?;
+    let players = engine.query(QueryExecution::parse_query(&format!(
+        "FROM {name} WHERE sport = \"Basketball\"",
+    ))?)?;
 
     println!(
         "Players playing basketball after deletion:\n{:?}\n",

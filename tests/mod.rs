@@ -5,7 +5,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_simple() {
         // given
-        let entity_name = "players::simple";
+        let entity_name = "players_simple";
 
         // creates entity
         create_entity(entity_name).await;
@@ -35,7 +35,7 @@ mod integration_tests {
     #[tokio::test]
     async fn test_delta_contexts() {
         // given
-        let entity_name = "players::delta_contexts";
+        let entity_name = "players_delta_contexts";
 
         // creates entity
         create_entity(entity_name).await;
@@ -147,7 +147,7 @@ mod integration_tests {
         // when
         let payload = format!(
             r#"{{
-                "entity": "{name}"
+                "query": "FROM {name}"
             }}"#
         );
 
@@ -184,16 +184,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score > 2",
-                "sort": {{
-                    "by": "score",
-                    "direction": "desc"
-                }},
-                "page": {{
-                    "start": 0,
-                    "size": 10
-                }}
+                "query": "FROM {name} WHERE score > 2 ORDER BY score DESC LIMIT 10"
             }}"#
         );
 
@@ -284,8 +275,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score < 7",
+                "query": "FROM {name} WHERE score < 7",
                 "scope": {{
                     "context": 0,
                     "date": "2020-01-01"
@@ -331,8 +321,7 @@ mod integration_tests {
         // when
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score < 7",
+                "query": "FROM {name} WHERE score < 7",
                 "scope": {{
                     "context": 0,
                     "date": "2020-01-01"
@@ -430,8 +419,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score < 7",
+                "query": "FROM {name} WHERE score < 7",
                 "scope": {{
                     "context": 0,
                     "date": "2020-01-01"
@@ -475,8 +463,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score < 7",
+                "query": "FROM {name} WHERE score < 7",
                 "scope": {{
                     "context": 1,
                     "date": "2020-01-01"
@@ -522,8 +509,7 @@ mod integration_tests {
         // when
         let payload = format!(
             r#"{{
-                "entity": "{name}",
-                "filter": "score < 7",
+                "query": "FROM {name} WHERE score < 7",
                 "scope": {{
                     "context": 1,
                     "date": "2020-01-01"

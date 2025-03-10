@@ -515,6 +515,7 @@ impl EntityStorage {
             // A stored delta is part of the scope, if it occurs the same date or before
             // the scope's date (stored timestamp is smaller or equal than the scope's timestamp)
             if stored_delta_key.timestamp <= scope_timestamp {
+                // Aggregate the stored delta for each field so that later wins over earlier value.
                 for (field, stored_delta) in stored_deltas {
                     if let Some(aggregated_delta) = aggregated_deltas.get_mut(&field) {
                         aggregated_delta.before.plus(&stored_delta.before)?;
@@ -666,7 +667,7 @@ impl EntityStorage {
                 let binding = self.index_descriptors.pin();
                 let type_descriptor = binding.get(field_name).unwrap_or_else(|| {
                     panic!(
-                        "Could not store delta. Field name \"{}\" is not available in the DB.",
+                        "Could not store delta. Field name \"{}\" is not stored as an index.",
                         field_name
                     )
                 });
