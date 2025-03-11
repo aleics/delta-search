@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn query_with_delta_context() {
+    fn query_with_delta_branch() {
         // given
         let runner = STORAGES.start_runner(vec![
             MICHAEL_JORDAN.clone(),
@@ -583,9 +583,9 @@ mod tests {
             CRISTIANO_RONALDO.clone(),
         ]);
 
-        let context = 0;
-        let delta_scope = DeltaScope::context(
-            context,
+        let branch = 0;
+        let delta_scope = DeltaScope::branch(
+            branch,
             Date::from_calendar_date(2023, Month::January, 1).unwrap(),
         );
 
@@ -602,39 +602,39 @@ mod tests {
         // when
         let filter = CompositeFilter::eq("sport", FieldValue::str("Football"));
 
-        let execution_without_context = QueryExecution::new()
+        let execution_without_branch = QueryExecution::new()
             .for_entity(runner.name.clone())
             .with_filter(filter.clone())
             .with_scope(DeltaScope::date(
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches_without_context = runner.engine.query(execution_without_context).unwrap();
+        let mut matches_without_branch = runner.engine.query(execution_without_branch).unwrap();
 
         // then
-        matches_without_context.sort_by(|a, b| a.id.cmp(&b.id));
+        matches_without_branch.sort_by(|a, b| a.id.cmp(&b.id));
 
         assert_eq!(
-            matches_without_context,
+            matches_without_branch,
             vec![LIONEL_MESSI.clone(), CRISTIANO_RONALDO.clone(),]
         );
 
         // when
-        let execution_with_context = QueryExecution::new()
+        let execution_with_branch = QueryExecution::new()
             .for_entity(runner.name.clone())
             .with_filter(filter.clone())
-            .with_scope(DeltaScope::context(
-                context,
+            .with_scope(DeltaScope::branch(
+                branch,
                 Date::from_calendar_date(2024, Month::January, 1).unwrap(),
             ));
 
-        let mut matches_with_context = runner.engine.query(execution_with_context).unwrap();
+        let mut matches_with_branch = runner.engine.query(execution_with_branch).unwrap();
 
         // then
-        matches_with_context.sort_by(|a, b| a.id.cmp(&b.id));
+        matches_with_branch.sort_by(|a, b| a.id.cmp(&b.id));
 
         assert_eq!(
-            matches_with_context,
+            matches_with_branch,
             vec![
                 Player {
                     id: 0,

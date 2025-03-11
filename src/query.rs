@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::Date;
 
-use crate::data::{DataItem, DataItemId, FieldValue};
+use crate::data::{parse_date, DataItem, DataItemId, FieldValue};
 use crate::index::{FilterError, Index};
 use crate::storage::{position_to_id, EntityIndices, EntityStorage, StorageError};
 
@@ -26,25 +26,22 @@ impl FilterOption {
 
 #[derive(Debug, PartialEq, Deserialize)]
 pub struct DeltaScope {
-    pub(crate) context: Option<u32>,
+    pub(crate) branch: Option<u32>,
     pub(crate) date: Date,
 }
 
 impl DeltaScope {
-    pub fn new(context: Option<u32>, date: Date) -> Self {
-        Self { context, date }
+    pub fn new(branch: Option<u32>, date: Date) -> Self {
+        Self { branch, date }
     }
 
     pub fn date(date: Date) -> Self {
-        DeltaScope {
-            context: None,
-            date,
-        }
+        DeltaScope { branch: None, date }
     }
 
-    pub fn context(context: u32, date: Date) -> Self {
+    pub fn branch(branch: u32, date: Date) -> Self {
         DeltaScope {
-            context: Some(context),
+            branch: Some(branch),
             date,
         }
     }
@@ -152,7 +149,7 @@ impl OptionsQueryExecution {
         Ok(OptionsQueryExecution {
             entity: parsed.entity,
             filter: parsed.filter,
-            scope: None,
+            scope: parsed.scope,
         })
     }
 
@@ -221,7 +218,7 @@ impl QueryExecution {
             entity: parsed.entity,
             filter: parsed.filter,
             sort: parsed.sort,
-            scope: None,
+            scope: parsed.scope,
             pagination: parsed.pagination,
             ref_fields,
         })
@@ -520,6 +517,7 @@ impl DeltaChange {
 #[derive(Debug, PartialEq)]
 pub(crate) struct ParsedQuery {
     entity: String,
+    scope: Option<DeltaScope>,
     filter: Option<CompositeFilter>,
     sort: Option<Sort>,
     pagination: Pagination,
@@ -539,6 +537,7 @@ pub(crate) struct ParsedQuery {
     }
     boolean    =  { ^"TRUE" | ^"FALSE" }
     array      =  { "[" ~ "]" | "[" ~ value ~ ("," ~ value)* ~ "]" }
+    date       =  { "\"" ~ ASCII_DIGIT{4} ~ "-" ~ ASCII_DIGIT{2} ~ "-" ~ ASCII_DIGIT{2} ~ "\"" }
     value      =  { number | string | boolean | array }
 
     comparison_operator = { "=" | "!=" | ">=" | "<=" | ">" | "<" }
@@ -552,12 +551,14 @@ pub(crate) struct ParsedQuery {
     ORDER_BY = { ^"ORDER BY" ~ name ~ (ASC | DESC)? }
     LIMIT    = { ^"LIMIT" ~ number }
     OFFSET   = { ^"OFFSET" ~ number }
+    AS_OF    = { ^"AS OF" ~ date }
+    BRANCH    = { ^"BRANCH" ~ number }
 
     statement = { "("{0, 1} ~ name ~ comparison_operator ~ value ~ ")"{0, 1} }
     composite = { "("{0, 1} ~ statement ~ (logical_operator ~ composite)* ~ ")"{0, 1} }
 
     // Allow any order of OFFSET and LIMIT
-    query     = { FROM ~ WHERE? ~ ORDER_BY? ~ OFFSET? ~ LIMIT? ~ OFFSET?  }
+    query     = { FROM ~ WHERE? ~ BRANCH? ~ AS_OF? ~ ORDER_BY? ~ OFFSET? ~ LIMIT? ~ OFFSET?  }
 "#]
 pub(crate) struct QueryParser;
 
@@ -578,6 +579,8 @@ impl QueryParser {
         let mut sort = None;
         let mut start = None;
         let mut size = None;
+        let mut delta_scope_date = None;
+        let mut delta_scope_branch = None;
 
         for pair in pairs {
             match pair.as_rule() {
@@ -609,6 +612,37 @@ impl QueryParser {
                         None
                     };
                 }
+                Rule::AS_OF => {
+                    let mut inner = pair.into_inner();
+                    delta_scope_date = if let Some(date) = inner.next() {
+                        let Ok(date) = date
+                            .as_str()
+                            // Remove double quotes from beginning and end (as stated in the grammar)
+                            .trim_start_matches('"')
+                            .trim_end_matches('"')
+                            .parse::<String>();
+
+                        Some(parse_date(&date).map_err(|_| {
+                            ParseError::InvalidQuery(
+                                "date value has the wrong formatting for AS OF statement",
+                            )
+                        })?)
+                    } else {
+                        None
+                    };
+                }
+                Rule::BRANCH => {
+                    let mut inner = pair.into_inner();
+                    delta_scope_branch = if let Some(branch) = inner.next() {
+                        Some(branch.as_str().parse::<u32>().map_err(|_| {
+                            ParseError::InvalidQuery(
+                                "expected numeric value after BRANCH statement",
+                            )
+                        })?)
+                    } else {
+                        None
+                    };
+                }
                 _ => {}
             }
         }
@@ -618,9 +652,15 @@ impl QueryParser {
             size.unwrap_or(DEFAULT_PAGE_SIZE),
         );
 
+        let scope = delta_scope_date.map(|date| DeltaScope {
+            date,
+            branch: delta_scope_branch,
+        });
+
         Ok(ParsedQuery {
             entity,
             filter,
+            scope,
             sort,
             pagination,
         })
@@ -697,6 +737,7 @@ impl QueryParser {
             | Rule::char
             | Rule::string
             | Rule::boolean
+            | Rule::date
             | Rule::array
             | Rule::value
             | Rule::comparison_operator
@@ -706,6 +747,8 @@ impl QueryParser {
             | Rule::ORDER_BY
             | Rule::LIMIT
             | Rule::OFFSET
+            | Rule::AS_OF
+            | Rule::BRANCH
             | Rule::ASC
             | Rule::DESC
             | Rule::query => unreachable!(),
@@ -776,6 +819,7 @@ impl QueryParser {
             | Rule::NAME_CHAR
             | Rule::name
             | Rule::char
+            | Rule::date
             | Rule::comparison_operator
             | Rule::logical_operator
             | Rule::statement
@@ -785,6 +829,8 @@ impl QueryParser {
             | Rule::ORDER_BY
             | Rule::LIMIT
             | Rule::OFFSET
+            | Rule::AS_OF
+            | Rule::BRANCH
             | Rule::ASC
             | Rule::DESC
             | Rule::query => unreachable!(),
@@ -851,9 +897,11 @@ pub enum ParseError {
 
 #[cfg(test)]
 mod tests {
+    use time::{Date, Month};
+
     use crate::data::FieldValue;
     use crate::query::{
-        CompositeFilter, Pagination, ParsedQuery, QueryParser, Sort, SortDirection,
+        CompositeFilter, DeltaScope, Pagination, ParsedQuery, QueryParser, Sort, SortDirection,
         DEFAULT_PAGE_SIZE, DEFAULT_START_PAGE,
     };
 
@@ -872,6 +920,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: None,
                 sort: None,
+                scope: None,
                 pagination: Pagination::default()
             }
         )
@@ -892,6 +941,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: None,
+                scope: None,
                 pagination: Pagination::default()
             }
         )
@@ -915,6 +965,7 @@ mod tests {
                     FieldValue::str("2020-01-01")
                 )),
                 sort: None,
+                scope: None,
                 pagination: Pagination::default()
             }
         )
@@ -950,6 +1001,7 @@ mod tests {
                     ])
                 ])),
                 sort: None,
+                scope: None,
                 pagination: Pagination::default()
             }
         )
@@ -969,6 +1021,7 @@ mod tests {
             ParsedQuery {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                scope: None,
                 sort: Some(Sort::new("person.score")),
                 pagination: Pagination::default()
             }
@@ -990,6 +1043,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::DESC)),
+                scope: None,
                 pagination: Pagination::default()
             }
         )
@@ -1010,6 +1064,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::DESC)),
+                scope: None,
                 pagination: Pagination::new(DEFAULT_START_PAGE, 10)
             }
         )
@@ -1030,6 +1085,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: None,
                 pagination: Pagination::new(10, DEFAULT_PAGE_SIZE)
             }
         )
@@ -1051,6 +1107,7 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: None,
                 pagination: Pagination::new(10, 20)
             }
         )
@@ -1072,6 +1129,57 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: None,
+                pagination: Pagination::new(10, 20)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_as_of_order_by_limit_offset() {
+        // given
+        let input =
+            "FROM person WHERE person.name = \"David\" AS OF \"2020-01-01\" ORDER BY person.score LIMIT 20 OFFSET 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: Some(DeltaScope {
+                    date: Date::from_calendar_date(2020, Month::January, 1).unwrap(),
+                    branch: None
+                }),
+                pagination: Pagination::new(10, 20)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_filter_as_of_branch_order_by_limit_offset() {
+        // given
+        let input =
+            "FROM person WHERE person.name = \"David\" BRANCH 1 AS OF \"2020-01-01\" ORDER BY person.score LIMIT 20 OFFSET 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: Some(DeltaScope {
+                    date: Date::from_calendar_date(2020, Month::January, 1).unwrap(),
+                    branch: Some(1)
+                }),
                 pagination: Pagination::new(10, 20)
             }
         )

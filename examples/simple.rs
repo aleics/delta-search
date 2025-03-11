@@ -86,14 +86,14 @@ fn main() -> Result<(), Error> {
         DecreaseScoreDelta::create(lionel_messi_id, 9.0),
     ];
 
-    let delta_scope = DeltaScope::context(0, Date::from_calendar_date(2023, Month::January, 1)?);
+    let delta_scope = DeltaScope::branch(0, Date::from_calendar_date(2023, Month::January, 1)?);
 
     engine.store_deltas(name, &delta_scope, lower_scores)?;
 
     let query = QueryExecution::new()
         .for_entity(name.to_string())
         .with_sort(Sort::new("score").with_direction(SortDirection::DESC))
-        .with_scope(DeltaScope::context(
+        .with_scope(DeltaScope::branch(
             0,
             Date::from_calendar_date(2024, Month::January, 1)?,
         ));

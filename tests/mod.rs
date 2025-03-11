@@ -33,9 +33,9 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn test_delta_contexts() {
+    async fn test_delta_branches() {
         // given
-        let entity_name = "players_delta_contexts";
+        let entity_name = "players_delta_branches";
 
         // creates entity
         create_entity(entity_name).await;
@@ -47,13 +47,13 @@ mod integration_tests {
         create_index(entity_name).await;
 
         // adds deltas
-        adds_deltas_different_contexts(entity_name).await;
+        adds_deltas_different_branches(entity_name).await;
 
         // executes query with deltas
-        executes_query_with_deltas_from_multiple_contexts(entity_name).await;
+        executes_query_with_deltas_from_multiple_branches(entity_name).await;
 
         // gets options with deltas
-        reads_filter_options_with_deltas_from_multiple_contexts(entity_name).await;
+        reads_filter_options_with_deltas_from_multiple_branches(entity_name).await;
     }
 
     async fn create_entity(name: &str) {
@@ -246,7 +246,7 @@ mod integration_tests {
         // given
         let payload = r#"{
             "scope": {
-                "context": 0,
+                "branch": 0,
                 "date": "2020-01-01"
             },
             "deltas": [
@@ -275,11 +275,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7",
-                "scope": {{
-                    "context": 0,
-                    "date": "2020-01-01"
-                }}
+                "query": "FROM {name} WHERE score < 7 BRANCH 0 AS OF \"2020-01-01\""
             }}"#
         );
 
@@ -321,11 +317,7 @@ mod integration_tests {
         // when
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7",
-                "scope": {{
-                    "context": 0,
-                    "date": "2020-01-01"
-                }}
+                "query": "FROM {name} WHERE score < 7 BRANCH 0 AS OF \"2020-01-01\""
             }}"#
         );
 
@@ -359,11 +351,11 @@ mod integration_tests {
         );
     }
 
-    async fn adds_deltas_different_contexts(name: &str) {
+    async fn adds_deltas_different_branches(name: &str) {
         // given
         let payload = r#"{
             "scope": {
-                "context": 0,
+                "branch": 0,
                 "date": "2020-01-01"
             },
             "deltas": [
@@ -390,7 +382,7 @@ mod integration_tests {
         // given
         let payload = r#"{
             "scope": {
-                "context": 1,
+                "branch": 1,
                 "date": "2020-01-01"
             },
             "deltas": [
@@ -415,15 +407,11 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn executes_query_with_deltas_from_multiple_contexts(name: &str) {
+    async fn executes_query_with_deltas_from_multiple_branches(name: &str) {
         // given
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7",
-                "scope": {{
-                    "context": 0,
-                    "date": "2020-01-01"
-                }}
+                "query": "FROM {name} WHERE score < 7 BRANCH 0 AS OF \"2020-01-01\""
             }}"#
         );
 
@@ -463,11 +451,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7",
-                "scope": {{
-                    "context": 1,
-                    "date": "2020-01-01"
-                }}
+                "query": "FROM {name} WHERE score < 7 BRANCH 1 AS OF \"2020-01-01\""
             }}"#
         );
 
@@ -505,15 +489,11 @@ mod integration_tests {
         );
     }
 
-    async fn reads_filter_options_with_deltas_from_multiple_contexts(name: &str) {
+    async fn reads_filter_options_with_deltas_from_multiple_branches(name: &str) {
         // when
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7",
-                "scope": {{
-                    "context": 1,
-                    "date": "2020-01-01"
-                }}
+                "query": "FROM {name} WHERE score < 7 BRANCH 1 AS OF \"2020-01-01\""
             }}"#
         );
 

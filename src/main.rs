@@ -99,14 +99,7 @@ impl App {
     }
 
     fn build_query_execution(input: QueryInput) -> Result<QueryExecution, AppError> {
-        let mut execution =
-            QueryExecution::parse_query(&input.query).map_err(|_| AppError::InvalidFilterQuery)?;
-
-        if let Some(scope) = input.scope {
-            execution = execution.with_scope(scope.map_delta_scope()?);
-        }
-
-        Ok(execution)
+        QueryExecution::parse_query(&input.query).map_err(|_| AppError::InvalidFilterQuery)
     }
 
     fn options(&self, input: QueryOptionsInput) -> Result<Vec<FilterOption>, AppError> {
@@ -121,14 +114,7 @@ impl App {
     fn build_options_execution(
         input: QueryOptionsInput,
     ) -> Result<OptionsQueryExecution, AppError> {
-        let mut execution = OptionsQueryExecution::parse_query(&input.query)
-            .map_err(|_| AppError::InvalidFilterQuery)?;
-
-        if let Some(scope) = input.scope {
-            execution = execution.with_scope(scope.map_delta_scope()?);
-        }
-
-        Ok(execution)
+        OptionsQueryExecution::parse_query(&input.query).map_err(|_| AppError::InvalidFilterQuery)
     }
 
     fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
@@ -255,7 +241,7 @@ async fn bulk_upsert_entity(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BulkStoreDeltas {
+struct BulkStoreDeltasInput {
     scope: DeltaScopeInput,
     deltas: Vec<DeltaChangeInput>,
 }
@@ -308,7 +294,7 @@ fn parse_date(string: &str) -> Result<Date, time::error::Parse> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeltaScopeInput {
-    context: Option<u32>,
+    branch: Option<u32>,
     date: String,
 }
 
@@ -318,14 +304,14 @@ impl DeltaScopeInput {
             message: "Date format is invalid. Only ISO 8601 is supported.".to_string(),
         })?;
 
-        Ok(DeltaScope::new(self.context, date))
+        Ok(DeltaScope::new(self.branch, date))
     }
 }
 
 async fn bulk_add_deltas(
     State(search): State<App>,
     Path(name): Path<String>,
-    Json(input): Json<BulkStoreDeltas>,
+    Json(input): Json<BulkStoreDeltasInput>,
 ) -> Result<Json<()>, AppError> {
     search.add_deltas(&name, input.scope, input.deltas)?;
     Ok(Json(()))
@@ -335,7 +321,6 @@ async fn bulk_add_deltas(
 #[serde(rename_all = "camelCase")]
 struct QueryOptionsInput {
     query: String,
-    scope: Option<DeltaScopeInput>,
 }
 
 async fn options(
@@ -376,7 +361,6 @@ async fn create_index(
 #[serde(rename_all = "camelCase")]
 struct QueryInput {
     query: String,
-    scope: Option<DeltaScopeInput>,
 }
 
 #[derive(Debug, Serialize)]

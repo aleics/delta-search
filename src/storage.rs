@@ -99,14 +99,14 @@ type BEU64 = U64<BigEndian>;
 
 #[derive(Debug, PartialEq)]
 struct DeltaKey {
-    context: u64,
+    branch: u64,
     timestamp: i64,
 }
 
 impl DeltaKey {
-    fn new(context: Option<u32>, timestamp: i64) -> Self {
-        let context = context.map(|context| context as u64 + 1).unwrap_or(0);
-        DeltaKey { context, timestamp }
+    fn new(branch: Option<u32>, timestamp: i64) -> Self {
+        let branch = branch.map(|branch| branch as u64 + 1).unwrap_or(0);
+        DeltaKey { branch, timestamp }
     }
 }
 
@@ -116,11 +116,11 @@ impl<'a> BytesEncode<'a> for DeltaKeyCodec {
     type EItem = DeltaKey;
 
     fn bytes_encode(key: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
-        let context_bytes = key.context.to_be_bytes();
+        let branch_bytes = key.branch.to_be_bytes();
         let timestamp_bytes = key.timestamp.to_be_bytes();
 
         let mut output = Vec::new();
-        output.extend_from_slice(&context_bytes);
+        output.extend_from_slice(&branch_bytes);
         output.extend_from_slice(&timestamp_bytes);
         Ok(Cow::Owned(output))
     }
@@ -130,16 +130,16 @@ impl<'a> BytesDecode<'a> for DeltaKeyCodec {
     type DItem = DeltaKey;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
-        let context_start = 0;
-        let context_end = size_of::<u64>();
-        let timestamp_start = context_end;
-        let timestamp_end = context_end + size_of::<i64>();
+        let branch_start = 0;
+        let branch_end = size_of::<u64>();
+        let timestamp_start = branch_end;
+        let timestamp_end = branch_end + size_of::<i64>();
 
         let bytes = bytes.to_vec();
 
-        let context = match bytes.get(context_start..context_end) {
+        let branch = match bytes.get(branch_start..branch_end) {
             Some(bytes) => bytes.try_into().map(u64::from_be_bytes).unwrap(),
-            None => return Err("invalid log key: cannot extract context".into()),
+            None => return Err("invalid log key: cannot extract branch".into()),
         };
 
         let timestamp = match bytes.get(timestamp_start..timestamp_end) {
@@ -147,22 +147,22 @@ impl<'a> BytesDecode<'a> for DeltaKeyCodec {
             None => return Err("invalid log key: cannot extract timestamp".into()),
         };
 
-        Ok(DeltaKey { context, timestamp })
+        Ok(DeltaKey { branch, timestamp })
     }
 }
 
-struct DeltaKeyContextCodec;
+struct DeltaKeyBranchCodec;
 
-impl<'a> BytesEncode<'a> for DeltaKeyContextCodec {
+impl<'a> BytesEncode<'a> for DeltaKeyBranchCodec {
     type EItem = u64;
 
-    fn bytes_encode(context: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
-        let context_bytes = context.to_be_bytes();
-        Ok(Cow::Owned(context_bytes.to_vec()))
+    fn bytes_encode(branch: &'a Self::EItem) -> Result<Cow<'a, [u8]>, BoxedError> {
+        let branch_bytes = branch.to_be_bytes();
+        Ok(Cow::Owned(branch_bytes.to_vec()))
     }
 }
 
-impl<'a> BytesDecode<'a> for DeltaKeyContextCodec {
+impl<'a> BytesDecode<'a> for DeltaKeyBranchCodec {
     type DItem = DeltaKey;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, BoxedError> {
@@ -499,14 +499,14 @@ impl EntityStorage {
         scope: &DeltaScope,
     ) -> Result<HashMap<String, StoredDelta>, StorageError> {
         let scope_timestamp = date_to_timestamp(scope.date);
-        let scope_key = DeltaKey::new(scope.context, scope_timestamp);
+        let scope_key = DeltaKey::new(scope.branch, scope_timestamp);
 
         let deltas_by_date = self
             .deltas
-            // Use the `DeltaKeyContextCodec` to read deltas using only the `context` as a prefix
+            // Use the `DeltaKeyBranchCodec` to read deltas using only the `branch` as a prefix
             // and iterate over keys ascending (lower timestamp to higher).
-            .remap_key_type::<DeltaKeyContextCodec>()
-            .rev_prefix_iter(txn, &scope_key.context)?;
+            .remap_key_type::<DeltaKeyBranchCodec>()
+            .rev_prefix_iter(txn, &scope_key.branch)?;
 
         let mut aggregated_deltas: HashMap<String, StoredDelta> = HashMap::new();
         for entry in deltas_by_date {
@@ -646,7 +646,7 @@ impl EntityStorage {
         deltas: Vec<DeltaChange>,
     ) -> Result<(), StorageError> {
         let scope_timestamp = date_to_timestamp(scope.date);
-        let scope_key = DeltaKey::new(scope.context, scope_timestamp);
+        let scope_key = DeltaKey::new(scope.branch, scope_timestamp);
 
         let mut txn = self.env.write_txn()?;
 

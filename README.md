@@ -41,7 +41,7 @@ cargo run --release
 
  - `POST /entities/{entity_name}`: define a new entity with a given name.
  - `PUT /data/{entity_name}`: store or update data in bulk in an entity entry.
- - `POST /deltas/{entity_name}`: store deltas with a given context in an entity entry.
+ - `POST /deltas/{entity_name}`: store deltas with a given branch in an entity entry.
  - `PUT /indices/{entity_name}`: create a new index for a given property in an entity entry.
  - `POST /options`: list filter options given a search query.
  - `POST /search`: send a search query.
