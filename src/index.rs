@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::iter::FromIterator;
 use std::ops::Bound;
@@ -822,6 +822,139 @@ impl<T: Ord + Clone> SortableIndex<T> {
     }
 }
 
+type TermPositions = HashMap<u32, HashSet<usize>>;
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TermIndex {
+    inner: HashMap<String, TermPositions>,
+}
+
+impl TermIndex {
+    /// Build a new `TermIndex` instance.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a new index based a given an iterator of words and term positions.
+    /// This is meant only to be used for assertions. This function assumes that
+    /// the data provided is correct.
+    pub(crate) fn from_iter<const N: usize>(pairs: [(&str, TermPositions); N]) -> Self {
+        let mut index = Self::new();
+        for (word, term_position) in pairs {
+            let Some(word) = Self::normalize(word) else {
+                continue;
+            };
+            index.inner.insert(word, term_position);
+        }
+        index
+    }
+
+    /// Check that a word is present in the index.
+    pub(crate) fn contains(&self, word: &str) -> RoaringBitmap {
+        let mut hits = RoaringBitmap::new();
+
+        let Some(term_positions) = Self::normalize(word).and_then(|word| self.inner.get(&word))
+        else {
+            return hits;
+        };
+
+        for position in term_positions.keys() {
+            hits.insert(*position);
+        }
+
+        hits
+    }
+
+    /// Match the terms with a complete phrase so that all the words in the
+    /// phrase must be present and in the same order. It returns all the positions
+    /// of the matching documents in a bitmap.
+    pub(crate) fn match_phrase(&self, phrase: &str) -> RoaringBitmap {
+        let mut word_consecutive_matches = HashMap::<u32, HashSet<usize>>::new();
+
+        // Iterate over each word from the input phrase
+        for word in phrase.split_whitespace().filter_map(Self::normalize) {
+            // Get the positions of the given term and their respective index
+            let Some(current_word_matches) = self.inner.get(&word) else {
+                return RoaringBitmap::new();
+            };
+
+            // For each matching word, refresh the consecutive matches so that only indices that
+            // have their previous already present in the result are returned.
+            let mut appended_positions = HashSet::with_capacity(current_word_matches.len());
+            for (position, term_indices) in current_word_matches {
+                if let Some(previous_indices) = word_consecutive_matches.get_mut(position) {
+                    // A document position has already been found, but no indices were stored.
+                    // This is an invalid state, it should not happen.
+                    assert!(!previous_indices.is_empty());
+
+                    // Generate new indices based on the previous incides so that only the ones with
+                    // a consecutive term in the current match survive.
+                    let mut new_indices = HashSet::<usize>::with_capacity(previous_indices.len());
+                    for term_index in term_indices {
+                        if previous_indices.contains(&(term_index - 1)) {
+                            new_indices.insert(term_index - 1);
+                            new_indices.insert(*term_index);
+                        }
+                    }
+
+                    *previous_indices = new_indices;
+                } else {
+                    // The document position is unknown, this is the first iteration
+                    word_consecutive_matches.insert(*position, term_indices.clone());
+                }
+
+                appended_positions.insert(position);
+            }
+
+            // Retain only the words that had a match in the current iteration
+            word_consecutive_matches.retain(|position, indices| {
+                appended_positions.contains(position) && !indices.is_empty()
+            });
+        }
+
+        RoaringBitmap::from_iter(word_consecutive_matches.keys())
+    }
+
+    /// Insert the content as words in the index for a given position
+    pub(crate) fn put(&mut self, content: &str, position: u32) {
+        for (term_index, word) in content
+            .split_whitespace()
+            .filter_map(Self::normalize)
+            .enumerate()
+        {
+            let matches = self.inner.entry(word).or_default();
+            let terms = matches.entry(position).or_default();
+
+            terms.insert(term_index);
+        }
+    }
+
+    /// Remove all the words for a given position. In case the given word has no results anymore,
+    /// it will be emptied from the index.
+    pub(crate) fn remove(&mut self, position: &u32) {
+        self.inner.retain(|_, term_positions| {
+            term_positions.retain(|term_position, _| term_position != position);
+            !term_positions.is_empty()
+        })
+    }
+
+    /// Normalize a given input word such that only alpha-numeric characters are allowed.
+    /// In case of an empty output string, `None` is returned.
+    fn normalize(word: &str) -> Option<String> {
+        let word = word
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>();
+
+        if word.is_empty() {
+            None
+        } else {
+            Some(word)
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeName {
     String,
@@ -877,6 +1010,8 @@ mod tests {
 
     use crate::index::{Index, NumericIndex};
 
+    use super::TermIndex;
+
     #[test]
     fn index_plus() {
         // given
@@ -927,6 +1062,137 @@ mod tests {
                 (1.0.into(), RoaringBitmap::from([])),
                 (2.0.into(), RoaringBitmap::from([1])),
             ]))
+        );
+    }
+
+    #[test]
+    fn term_index_put_ignores_non_alphabetic_chars() {
+        // given
+        let content = "! @ # $ % ^ & * ( ) - hello _ = + [ { ] } : ; world \" ' \\ | , < . > / ?";
+        let mut index = TermIndex::new();
+
+        // when
+        index.put(content, 1);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("hello", [(1, [0].into())].into()),
+                ("world", [(1, [1].into())].into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_put() {
+        // given
+        let content = "This is a very important document for a very important goal.";
+        let mut index = TermIndex::new();
+
+        // when
+        index.put(content, 1);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("this", [(1, [0].into())].into()),
+                ("is", [(1, [1].into())].into()),
+                ("a", [(1, [2, 7].into())].into()),
+                ("very", [(1, [3, 8].into())].into(),),
+                ("important", [(1, [4, 9].into())].into(),),
+                ("document", [(1, [5].into())].into()),
+                ("for", [(1, [6].into())].into()),
+                ("goal", [(1, [10].into())].into())
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_put_allows_numbers() {
+        // given
+        let content = "1 2";
+        let mut index = TermIndex::new();
+
+        // when
+        index.put(content, 1);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("1", [(1, [0].into())].into()),
+                ("2", [(1, [1].into())].into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_contains() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        index.put("Another very important goal.", 2);
+
+        // when
+        assert_eq!(index.contains("very"), RoaringBitmap::from([1, 2]));
+        assert_eq!(index.contains("document"), RoaringBitmap::from([1]));
+        assert_eq!(index.contains("foo"), RoaringBitmap::new());
+    }
+
+    #[test]
+    fn term_index_match_phrase() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        index.put("Another very important goal.", 2);
+
+        // when
+        assert_eq!(
+            index.match_phrase("very important"),
+            RoaringBitmap::from([1, 2])
+        );
+        assert_eq!(
+            index.match_phrase("important very"),
+            RoaringBitmap::from([])
+        );
+        assert_eq!(
+            index.match_phrase("important document"),
+            RoaringBitmap::from([1])
+        );
+        assert_eq!(index.match_phrase("foo bar"), RoaringBitmap::from([]));
+        assert_eq!(index.match_phrase("."), RoaringBitmap::from([]));
+    }
+
+    #[test]
+    fn term_index_remove() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        index.put("Another very important goal.", 2);
+
+        // when
+        index.remove(&1);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("another", [(2, [0].into())].into()),
+                ("very", [(2, [1].into())].into()),
+                ("important", [(2, [2].into())].into()),
+                ("goal", [(2, [3].into())].into()),
+            ])
         );
     }
 }
