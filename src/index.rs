@@ -15,11 +15,16 @@ use time::format_description::well_known::Iso8601;
 
 #[derive(Clone, Debug)]
 pub enum TypeDescriptor {
-    String,
+    String(StringTypeDescriptor),
     Numeric,
     Date,
     Bool,
     Enum(HashSet<String>),
+}
+
+#[derive(Clone, Debug)]
+pub struct StringTypeDescriptor {
+    pub term: bool,
 }
 
 trait FilterableIndex {
@@ -68,7 +73,9 @@ pub(crate) enum Index {
 impl Index {
     pub(crate) fn create_descriptor(&self) -> TypeDescriptor {
         match self {
-            Index::String(_) => TypeDescriptor::String,
+            Index::String(index) => TypeDescriptor::String(StringTypeDescriptor {
+                term: index.term.is_some(),
+            }),
             Index::Numeric(_) => TypeDescriptor::Numeric,
             Index::Date(_) => TypeDescriptor::Date,
             Index::Enum(index) => {
@@ -81,7 +88,14 @@ impl Index {
 
     pub(crate) fn from_type(value: &TypeDescriptor) -> Self {
         match value {
-            TypeDescriptor::String => Index::String(StringIndex::new()),
+            TypeDescriptor::String(descriptor) => {
+                let mut index = StringIndex::new();
+                if descriptor.term {
+                    index.set_term(TermIndex::new());
+                }
+
+                Index::String(index)
+            }
             TypeDescriptor::Numeric => Index::Numeric(NumericIndex::new()),
             TypeDescriptor::Date => Index::Date(DateIndex::new()),
             TypeDescriptor::Enum(names) => {

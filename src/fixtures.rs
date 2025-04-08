@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::data::FieldValue;
-use crate::index::TypeDescriptor;
+use crate::index::{StringTypeDescriptor, TypeDescriptor};
 use crate::query::DeltaChange;
 use crate::storage::{CreateFieldIndex, EntityStorage, StorageBuilder};
 use crate::{DataItem, DataItemId, Engine};
@@ -134,7 +134,7 @@ fn carry_players(items: Vec<DataItem>, storage: &EntityStorage) {
         .create_indices(vec![
             CreateFieldIndex {
                 name: "name".to_string(),
-                descriptor: TypeDescriptor::String,
+                descriptor: TypeDescriptor::String(StringTypeDescriptor { term: true }),
             },
             CreateFieldIndex {
                 name: "sport".to_string(),

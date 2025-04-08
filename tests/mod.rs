@@ -8,18 +8,24 @@ mod integration_tests {
         let entity_name = "players_simple";
 
         // creates entity
-        create_entity(entity_name).await;
+        creates_entity(entity_name).await;
 
         // populates data
-        populate_data(entity_name).await;
+        populates_data(entity_name).await;
 
         // creates index
-        create_index(entity_name).await;
+        creates_index(entity_name).await;
+
+        // creates term query
+        creates_term_index(entity_name).await;
 
         // gets options
         reads_all_filter_options(entity_name).await;
 
         // executes query
+        executes_query(entity_name).await;
+
+        // executes term query
         executes_query(entity_name).await;
 
         // adds deltas
@@ -38,13 +44,13 @@ mod integration_tests {
         let entity_name = "players_delta_branches";
 
         // creates entity
-        create_entity(entity_name).await;
+        creates_entity(entity_name).await;
 
         // populates data
-        populate_data(entity_name).await;
+        populates_data(entity_name).await;
 
         // creates index
-        create_index(entity_name).await;
+        creates_index(entity_name).await;
 
         // adds deltas
         adds_deltas_different_branches(entity_name).await;
@@ -56,7 +62,7 @@ mod integration_tests {
         reads_filter_options_with_deltas_from_multiple_branches(entity_name).await;
     }
 
-    async fn create_entity(name: &str) {
+    async fn creates_entity(name: &str) {
         // given
         let payload = r#"{}"#;
 
@@ -73,7 +79,7 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK)
     }
 
-    async fn populate_data(name: &str) {
+    async fn populates_data(name: &str) {
         // given
         let payload = r#"{
             "data": [
@@ -123,11 +129,32 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    async fn create_index(name: &str) {
+    async fn creates_index(name: &str) {
         // given
         let payload = r#"{
             "name": "score",
             "type": "numeric"
+        }"#;
+
+        // when
+        let response = Client::new()
+            .put(format!("http://127.0.0.1:3000/indices/{}", name))
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn creates_term_index(name: &str) {
+        // given
+        let payload = r#"{
+            "type": "string",
+            "name": "name",
+            "term": true
         }"#;
 
         // when
@@ -167,6 +194,14 @@ mod integration_tests {
             normalize(&response_body),
             normalize(
                 r#"[
+                    {
+                        "field": "name",
+                        "values":{
+                            "Cristiano Ronaldo": 1,
+                            "Lionel Messi": 1,
+                            "Michael Jordan": 1
+                        }
+                    },
                     {
                         "field": "score",
                         "values": {
@@ -337,6 +372,14 @@ mod integration_tests {
             normalize(&response_body),
             normalize(
                 r#"[
+                    {
+                        "field": "name",
+                        "values": {
+                            "Cristiano Ronaldo": 0,
+                            "Lionel Messi": 1,
+                            "Michael Jordan": 0
+                        }
+                    },
                     {
                         "field": "score",
                         "values": {

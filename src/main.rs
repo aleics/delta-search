@@ -15,7 +15,7 @@ use time::Date;
 use delta_search::data::{
     DataItem, DataItemFieldsExternal, DataItemId, FieldValue, FieldValueExternal,
 };
-use delta_search::index::TypeDescriptor;
+use delta_search::index::{StringTypeDescriptor, TypeDescriptor};
 use delta_search::query::{
     DeltaChange, DeltaScope, FilterOption, OptionsQueryExecution, QueryExecution,
 };
@@ -118,16 +118,25 @@ impl App {
     }
 
     fn create_index(&self, name: &str, input: CreateIndexInput) -> Result<(), AppError> {
-        let descriptor = match input.kind {
-            CreateIndexTypeInput::String => TypeDescriptor::String,
-            CreateIndexTypeInput::Numeric => TypeDescriptor::Numeric,
-            CreateIndexTypeInput::Date => TypeDescriptor::Date,
-            CreateIndexTypeInput::Bool => TypeDescriptor::Bool,
-        };
-
-        let command = CreateFieldIndex {
-            name: input.name,
-            descriptor,
+        let command = match input {
+            CreateIndexInput::String(create_index) => CreateFieldIndex {
+                name: create_index.name,
+                descriptor: TypeDescriptor::String(StringTypeDescriptor {
+                    term: create_index.term,
+                }),
+            },
+            CreateIndexInput::Numeric(create_index) => CreateFieldIndex {
+                name: create_index.name,
+                descriptor: TypeDescriptor::Numeric,
+            },
+            CreateIndexInput::Date(create_index) => CreateFieldIndex {
+                name: create_index.name,
+                descriptor: TypeDescriptor::Date,
+            },
+            CreateIndexInput::Bool(create_index) => CreateFieldIndex {
+                name: create_index.name,
+                descriptor: TypeDescriptor::Bool,
+            },
         };
 
         self.inner
@@ -333,19 +342,37 @@ async fn options(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CreateIndexInput {
-    name: String,
-    #[serde(rename = "type")]
-    kind: CreateIndexTypeInput,
+#[serde(tag = "type")]
+enum CreateIndexInput {
+    String(CreateStringIndexTypeInput),
+    Numeric(CreateNumericIndexTypeInput),
+    Date(CreateDateIndexTypeInput),
+    Bool(CreateBoolIndexTypeInput),
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-enum CreateIndexTypeInput {
-    String,
-    Numeric,
-    Date,
-    Bool,
+struct CreateStringIndexTypeInput {
+    name: String,
+    term: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNumericIndexTypeInput {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateDateIndexTypeInput {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateBoolIndexTypeInput {
+    name: String,
 }
 
 async fn create_index(
