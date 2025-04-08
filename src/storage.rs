@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::path::Path;
 
@@ -456,7 +456,7 @@ impl EntityStorage {
     ///
     /// Use the current transaction to don't create transactions implicitly, if not needed.
     fn read_indices(&self, txn: &RoTxn, fields: &[String]) -> Result<EntityIndices, StorageError> {
-        let mut field_indices = HashMap::with_capacity(fields.len());
+        let mut field_indices = BTreeMap::new();
 
         for field in fields {
             if let Some(index) = self.indices.get(txn, field)? {
@@ -477,7 +477,7 @@ impl EntityStorage {
     ///
     /// Use the current transaction to don't create transactions implicitly, if not needed.
     fn read_all_indices(&self, txn: &RoTxn) -> Result<EntityIndices, StorageError> {
-        let mut field_indices = HashMap::new();
+        let mut field_indices = BTreeMap::new();
 
         for item in self.indices.iter(txn)? {
             let (field, index) = item?;
@@ -716,7 +716,7 @@ pub enum StorageError {
 #[derive(Default, Debug)]
 pub struct EntityIndices {
     /// Indices available associated by data's field name
-    pub(crate) field_indices: HashMap<String, Index>,
+    pub(crate) field_indices: BTreeMap<String, Index>,
 
     /// Bitmap including all items' positions
     pub(crate) all: RoaringBitmap,
