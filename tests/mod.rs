@@ -385,8 +385,7 @@ mod integration_tests {
                         "values": {
                             "6": 1,
                             "8.7": 0,
-                            "9": 0,
-                            "9.5": 0
+                            "9": 0
                         }
                     }
                 ]"#
@@ -561,7 +560,6 @@ mod integration_tests {
                         "values": {
                             "5": 1,
                             "8.7": 0,
-                            "9": 0,
                             "9.5": 0
                         }
                     }

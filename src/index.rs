@@ -803,6 +803,10 @@ impl<T: Ord + Clone> SortableIndex<T> {
         for (key, right) in &other.0 {
             if let Some(left) = self.0.get_mut(key) {
                 *left -= right;
+
+                if left.is_empty() {
+                    self.0.remove(key);
+                }
             }
         }
     }
@@ -1109,10 +1113,10 @@ mod tests {
         // then
         assert_eq!(
             left,
-            Index::Numeric(NumericIndex::from_iter([
-                (1.0.into(), RoaringBitmap::from([])),
-                (2.0.into(), RoaringBitmap::from([1])),
-            ]))
+            Index::Numeric(NumericIndex::from_iter([(
+                2.0.into(),
+                RoaringBitmap::from([1])
+            ),]))
         );
     }
 
