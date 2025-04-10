@@ -57,6 +57,19 @@ fn bench_filter_numeric_between(b: &mut Bencher) {
 }
 
 #[bench]
+fn bench_filter_term_contains(b: &mut Bencher) {
+    b.iter(move || {
+        let filter = CompositeFilter::contains("name", FieldValue::str("player"));
+        let query = QueryExecution::new()
+            .for_entity(NAME.to_string())
+            .with_filter(filter)
+            .with_pagination(*PAGINATION);
+
+        ENGINE.query(query).unwrap();
+    });
+}
+
+#[bench]
 fn bench_filter_or(b: &mut Bencher) {
     b.iter(move || {
         let filter = CompositeFilter::or(vec![
