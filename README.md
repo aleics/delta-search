@@ -51,3 +51,11 @@ cargo run --release
 `delta-search` aims to provide simple filtering and sorting capabilities, while allowing to apply temporary _deltas_ in
 memory, on top of the existing data stored on disk  using [LMDB](https://en.wikipedia.org/wiki/Lightning_Memory-Mapped_Database). This is especially interesting when  visualizing
 potential changes in your data without persisting them yet.
+
+
+## Development
+This repository makes use of [`just`](https://github.com/casey/just) to simplify useful command lines. Check the available recipes with:
+
+```shell
+just -l
+```
