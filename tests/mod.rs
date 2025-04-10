@@ -286,6 +286,11 @@ mod integration_tests {
             },
             "deltas": [
                 {
+                    "id": 0,
+                    "fieldName": "name",
+                    "after": "Michael Jeffrey Jordan"
+                },
+                {
                     "id": 1,
                     "fieldName": "score",
                     "after": 6
@@ -310,7 +315,7 @@ mod integration_tests {
         // given
         let payload = format!(
             r#"{{
-                "query": "FROM {name} WHERE score < 7 BRANCH 0 AS OF \"2020-01-01\""
+                "query": "FROM {name} WHERE score < 7 OR name CONTAINS \"Jeffrey\" BRANCH 0 AS OF \"2020-01-01\""
             }}"#
         );
 
@@ -332,6 +337,16 @@ mod integration_tests {
             normalize(
                 r#"{
                     "data": [
+                        {
+                            "id": 0,
+                            "fields": {
+                                "active": false,
+                                "birth_date": "1963-02-17",
+                                "name": "Michael Jeffrey Jordan",
+                                "score": 9.0,
+                                "sport": "Basketball"
+                            }
+                        },
                         {
                             "id": 1,
                             "fields": {
@@ -377,7 +392,7 @@ mod integration_tests {
                         "values": {
                             "Cristiano Ronaldo": 0,
                             "Lionel Messi": 1,
-                            "Michael Jordan": 0
+                            "Michael Jeffrey Jordan": 0
                         }
                     },
                     {

@@ -149,7 +149,7 @@ mod tests {
         michael_jordan, roger, DecreaseScoreDelta, Player, Sport, SwitchSportsDelta, TestRunners,
     };
     use crate::query::{
-        CompositeFilter, DeltaScope, FilterOption, OptionsQueryExecution, Pagination,
+        CompositeFilter, DeltaChange, DeltaScope, FilterOption, OptionsQueryExecution, Pagination,
         QueryExecution, Sort, SortDirection,
     };
 
@@ -161,6 +161,33 @@ mod tests {
         static ref ROGER: DataItem = roger();
         static ref DAVID: DataItem = david();
         static ref DATE: Date = Date::from_calendar_date(2024, Month::January, 1).unwrap();
+    }
+
+    #[test]
+    fn query_string_term_contains_filter() {
+        // given
+        let runner = STORAGES.start_runner(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+        ]);
+
+        let filter = CompositeFilter::contains("name", FieldValue::str("Michael"));
+
+        // when
+        let mut matches = runner
+            .engine
+            .query(
+                QueryExecution::new()
+                    .for_entity(runner.name.clone())
+                    .with_filter(filter),
+            )
+            .unwrap();
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(matches, vec![MICHAEL_JORDAN.clone()]);
     }
 
     #[test]
@@ -570,6 +597,54 @@ mod tests {
                 .as_item(),
                 LIONEL_MESSI.clone(),
                 CRISTIANO_RONALDO.clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn query_term_delta() {
+        // given
+        let runner = STORAGES.start_runner(vec![
+            MICHAEL_JORDAN.clone(),
+            LIONEL_MESSI.clone(),
+            CRISTIANO_RONALDO.clone(),
+        ]);
+
+        let delta_scope =
+            DeltaScope::date(Date::from_calendar_date(2023, Month::January, 1).unwrap());
+        let deltas = vec![DeltaChange::new(
+            LIONEL_MESSI.id,
+            "name".to_string(),
+            FieldValue::String("Lionel Roccuzzo".to_string()),
+        )];
+
+        runner
+            .engine
+            .store_deltas(&runner.name, &delta_scope, deltas)
+            .unwrap();
+
+        // when
+        let execution = QueryExecution::new()
+            .for_entity(runner.name.clone())
+            .with_filter(CompositeFilter::contains(
+                "name",
+                FieldValue::str("Roccuzzo"),
+            ))
+            .with_scope(DeltaScope::date(
+                Date::from_calendar_date(2024, Month::January, 1).unwrap(),
+            ));
+
+        let mut matches = runner.engine.query(execution).unwrap();
+
+        // then
+        matches.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(
+            matches,
+            vec![
+                Player::new(1, "Lionel Roccuzzo", Sport::Football, "1987-06-24", true)
+                    .with_score(9.0)
+                    .as_item()
             ]
         );
     }

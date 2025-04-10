@@ -353,6 +353,13 @@ impl CompositeFilter {
         })
     }
 
+    pub fn contains(name: &str, value: FieldValue) -> Self {
+        CompositeFilter::Single(Filter {
+            name: name.to_string(),
+            operation: FilterOperation::Contains(value),
+        })
+    }
+
     pub fn or(filters: Vec<CompositeFilter>) -> Self {
         CompositeFilter::Or(filters)
     }
@@ -528,6 +535,7 @@ pub(crate) struct ParsedQuery {
     pagination: Pagination,
 }
 
+// TODO: implement parsing for "contains"
 #[derive(pest_derive::Parser)]
 #[grammar_inline = r#"
     WHITESPACE = _{ " " }
@@ -545,7 +553,14 @@ pub(crate) struct ParsedQuery {
     date       =  { "\"" ~ ASCII_DIGIT{4} ~ "-" ~ ASCII_DIGIT{2} ~ "-" ~ ASCII_DIGIT{2} ~ "\"" }
     value      =  { number | string | boolean | array }
 
-    comparison_operator = { "=" | "!=" | ">=" | "<=" | ">" | "<" }
+    eq_operator         = { "=" }
+    not_eq_operator     = { "!=" }
+    ge_operator         = { ">=" }
+    le_operator         = { "<=" }
+    gt_operator         = { ">" }
+    lt_operator         = { "<" }
+    contains_operator   = { ^"CONTAINS" }
+    comparison_operator = { eq_operator | not_eq_operator | ge_operator | le_operator | gt_operator | lt_operator | contains_operator }
     logical_operator    = { ^"AND" | ^"OR" }
 
     ASC  = { ^"ASC" }
@@ -746,6 +761,13 @@ impl QueryParser {
             | Rule::array
             | Rule::value
             | Rule::comparison_operator
+            | Rule::eq_operator
+            | Rule::not_eq_operator
+            | Rule::ge_operator
+            | Rule::le_operator
+            | Rule::gt_operator
+            | Rule::lt_operator
+            | Rule::contains_operator
             | Rule::logical_operator
             | Rule::FROM
             | Rule::WHERE
@@ -767,12 +789,9 @@ impl QueryParser {
                     ))?
                     .as_str();
 
-                let operator = inner
-                    .next()
-                    .ok_or(ParseError::InvalidQuery(
-                        "expected comparison operator in filter statement",
-                    ))?
-                    .as_str();
+                let operator = inner.next().ok_or(ParseError::InvalidQuery(
+                    "expected comparison operator in filter statement",
+                ))?;
 
                 let value = inner.next().ok_or(ParseError::InvalidQuery(
                     "expected value in filter statement",
@@ -780,14 +799,31 @@ impl QueryParser {
 
                 let value = Self::parse_value(value);
 
-                match operator {
-                    "=" => Ok(CompositeFilter::eq(name, value)),
-                    ">=" => Ok(CompositeFilter::ge(name, value)),
-                    "<=" => Ok(CompositeFilter::le(name, value)),
-                    ">" => Ok(CompositeFilter::gt(name, value)),
-                    "<" => Ok(CompositeFilter::lt(name, value)),
-                    "!=" => Ok(CompositeFilter::negate(CompositeFilter::eq(name, value))),
-                    _ => Err(ParseError::UnknownOperator),
+                if let Rule::comparison_operator = operator.as_rule() {
+                    let operator = operator
+                        .into_inner()
+                        .next()
+                        .ok_or(ParseError::InvalidQuery(
+                            "expected comparison operator in filter statement",
+                        ))?
+                        .as_rule();
+
+                    match operator {
+                        Rule::eq_operator => Ok(CompositeFilter::eq(name, value)),
+                        Rule::not_eq_operator => {
+                            Ok(CompositeFilter::negate(CompositeFilter::eq(name, value)))
+                        }
+                        Rule::ge_operator => Ok(CompositeFilter::ge(name, value)),
+                        Rule::le_operator => Ok(CompositeFilter::le(name, value)),
+                        Rule::gt_operator => Ok(CompositeFilter::gt(name, value)),
+                        Rule::lt_operator => Ok(CompositeFilter::lt(name, value)),
+                        Rule::contains_operator => Ok(CompositeFilter::contains(name, value)),
+                        _ => Err(ParseError::UnknownOperator),
+                    }
+                } else {
+                    Err(ParseError::InvalidQuery(
+                        "expected operator to be a comparison operator in filter statement",
+                    ))
                 }
             }
             Rule::composite => {
@@ -826,6 +862,13 @@ impl QueryParser {
             | Rule::char
             | Rule::date
             | Rule::comparison_operator
+            | Rule::eq_operator
+            | Rule::not_eq_operator
+            | Rule::ge_operator
+            | Rule::le_operator
+            | Rule::gt_operator
+            | Rule::lt_operator
+            | Rule::contains_operator
             | Rule::logical_operator
             | Rule::statement
             | Rule::composite
@@ -975,9 +1018,33 @@ mod tests {
     }
 
     #[test]
+    fn creates_contains_filter() {
+        // given
+        let input = "FROM person WHERE person.name contains \"Alice\"";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::contains(
+                    "person.name",
+                    FieldValue::str("Alice")
+                )),
+                sort: None,
+                scope: None,
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
     fn creates_complex_filter() {
         // given
-        let input = "FROM person WHERE (person.name != \"Michael Jordan\") AND (score > 1 OR active = true AND (person.name.simple = \"Roger\" OR score <= 5))";
+        let input = "FROM person WHERE (person.name != \"Michael Jordan\" AND person.address CONTAINS \"Street\") AND (score > 1 OR active = true AND (person.name.simple = \"Roger\" OR score <= 5))";
 
         // when
         let result = QueryParser::parse_query(input).unwrap();
@@ -992,13 +1059,19 @@ mod tests {
                         "person.name",
                         FieldValue::str("Michael Jordan")
                     )),
-                    CompositeFilter::or(vec![
-                        CompositeFilter::gt("score", FieldValue::dec(1.0)),
-                        CompositeFilter::and(vec![
-                            CompositeFilter::eq("active", FieldValue::bool(true)),
-                            CompositeFilter::or(vec![
-                                CompositeFilter::eq("person.name.simple", FieldValue::str("Roger")),
-                                CompositeFilter::le("score", FieldValue::dec(5.0)),
+                    CompositeFilter::and(vec![
+                        CompositeFilter::contains("person.address", FieldValue::str("Street")),
+                        CompositeFilter::or(vec![
+                            CompositeFilter::gt("score", FieldValue::dec(1.0)),
+                            CompositeFilter::and(vec![
+                                CompositeFilter::eq("active", FieldValue::bool(true)),
+                                CompositeFilter::or(vec![
+                                    CompositeFilter::eq(
+                                        "person.name.simple",
+                                        FieldValue::str("Roger")
+                                    ),
+                                    CompositeFilter::le("score", FieldValue::dec(5.0)),
+                                ])
                             ])
                         ])
                     ])
@@ -1178,6 +1251,34 @@ mod tests {
             ParsedQuery {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::eq("person.name", FieldValue::str("David"))),
+                sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
+                scope: Some(DeltaScope {
+                    date: Date::from_calendar_date(2020, Month::January, 1).unwrap(),
+                    branch: Some(1)
+                }),
+                pagination: Pagination::new(10, 20)
+            }
+        )
+    }
+
+    #[test]
+    fn creates_composite_filter_as_of_branch_order_by_limit_offset() {
+        // given
+        let input =
+            "FROM person WHERE person.name = \"David\" OR person.address CONTAINS \"Street\" BRANCH 1 AS OF \"2020-01-01\" ORDER BY person.score LIMIT 20 OFFSET 10";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::or(vec![
+                    CompositeFilter::eq("person.name", FieldValue::str("David")),
+                    CompositeFilter::contains("person.address", FieldValue::str("Street"))
+                ])),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
                 scope: Some(DeltaScope {
                     date: Date::from_calendar_date(2020, Month::January, 1).unwrap(),
