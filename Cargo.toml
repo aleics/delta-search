@@ -15,12 +15,12 @@ papaya = "0.1.8"
 pest = "2.7.15"
 pest_derive = "2.7.15"
 roaring = { version = "0.10.10", features = ["serde"] }
+serde = { version = "1.0.217", features = ["derive"] }
+thiserror = "2.0.11"
 time = { version = "0.3.37", features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1.43", features = ["full"] }
-thiserror = "2.0.11"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
-serde = { version = "1.0.217", features = ["derive"] }
 
 [dev-dependencies]
 lazy_static = "1.5.0"

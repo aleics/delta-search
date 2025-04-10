@@ -584,7 +584,8 @@ pub(crate) struct QueryParser;
 
 impl QueryParser {
     pub(crate) fn parse_query(input: &str) -> Result<ParsedQuery, ParseError> {
-        let mut pairs = Self::parse(Rule::query, input)
+        let input = Self::normalize(input);
+        let mut pairs = Self::parse(Rule::query, &input)
             .map_err(|err| ParseError::QueryParse(err.line().to_string()))?;
 
         let query_pair = pairs.next().ok_or(ParseError::EmptyQuery)?;
@@ -917,6 +918,26 @@ impl QueryParser {
             }
         }
     }
+
+    /// Normalizes an input query to remove duplicate whitespaces, tabs and new lines
+    fn normalize(input: &str) -> String {
+        let mut result = String::new();
+        let mut prev_was_whitespace = false;
+
+        for c in input.chars() {
+            if c.is_whitespace() {
+                if !prev_was_whitespace {
+                    result.push(' ');
+                    prev_was_whitespace = true;
+                }
+            } else {
+                result.push(c);
+                prev_was_whitespace = false;
+            }
+        }
+
+        result.trim().to_string()
+    }
 }
 
 #[derive(Error, Debug)]
@@ -1044,7 +1065,11 @@ mod tests {
     #[test]
     fn creates_complex_filter() {
         // given
-        let input = "FROM person WHERE (person.name != \"Michael Jordan\" AND person.address CONTAINS \"Street\") AND (score > 1 OR active = true AND (person.name.simple = \"Roger\" OR score <= 5))";
+        let input = r#"
+            FROM person
+                WHERE (person.name != "Michael Jordan" AND person.address CONTAINS "Street")
+                    AND (score > 1 OR active = true AND (person.name.simple = "Roger" OR score <= 5))
+        "#;
 
         // when
         let result = QueryParser::parse_query(input).unwrap();
@@ -1239,8 +1264,14 @@ mod tests {
     #[test]
     fn creates_filter_as_of_branch_order_by_limit_offset() {
         // given
-        let input =
-            "FROM person WHERE person.name = \"David\" BRANCH 1 AS OF \"2020-01-01\" ORDER BY person.score LIMIT 20 OFFSET 10";
+        let input = r#"
+            FROM person
+                WHERE person.name = "David"
+                BRANCH 1 AS OF "2020-01-01"
+                ORDER BY person.score
+                LIMIT 20
+                OFFSET 10
+        "#;
 
         // when
         let result = QueryParser::parse_query(input).unwrap();
@@ -1264,8 +1295,14 @@ mod tests {
     #[test]
     fn creates_composite_filter_as_of_branch_order_by_limit_offset() {
         // given
-        let input =
-            "FROM person WHERE person.name = \"David\" OR person.address CONTAINS \"Street\" BRANCH 1 AS OF \"2020-01-01\" ORDER BY person.score LIMIT 20 OFFSET 10";
+        let input = r#"
+            FROM person
+                WHERE person.name = "David" OR person.address CONTAINS "Street"
+                BRANCH 1 AS OF "2020-01-01"
+                ORDER BY person.score
+                LIMIT 20
+                OFFSET 10
+        "#;
 
         // when
         let result = QueryParser::parse_query(input).unwrap();
