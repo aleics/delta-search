@@ -41,6 +41,7 @@ trait FilterableIndex {
             FilterOperation::LessThanOrEqual(value) => {
                 self.between(Bound::Unbounded, Bound::Included(value))
             }
+            FilterOperation::Contains(value) => self.contains(value),
         }
     }
 
@@ -51,6 +52,8 @@ trait FilterableIndex {
         first: Bound<&FieldValue>,
         second: Bound<&FieldValue>,
     ) -> Result<RoaringBitmap, FilterError>;
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,19 +165,9 @@ impl Index {
         Ok(())
     }
 
-    pub(crate) fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        match self {
-            Index::String(index) => index.remove(value, position),
-            Index::Numeric(index) => index.remove(value, position),
-            Index::Date(index) => index.remove(value, position),
-            Index::Enum(index) => index.remove(value, position),
-            Index::Bool(index) => index.remove(value, position),
-        }
-    }
-
     pub(crate) fn remove_item(&mut self, position: u32) {
         match self {
-            Index::String(index) => index.inner.remove_item(position),
+            Index::String(index) => index.remove_item(position),
             Index::Numeric(index) => index.inner.remove_item(position),
             Index::Date(index) => index.inner.remove_item(position),
             Index::Enum(index) => index.inner.remove_item(position),
@@ -196,6 +189,7 @@ impl Index {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StringIndex {
     inner: SortableIndex<String>,
+    term: Option<TermIndex>,
 }
 
 impl StringIndex {
@@ -203,10 +197,15 @@ impl StringIndex {
         Self::default()
     }
 
-    fn from_pairs<const N: usize>(arr: [(String, RoaringBitmap); N]) -> Self {
+    fn from_iter<const N: usize>(arr: [(String, RoaringBitmap); N]) -> Self {
         StringIndex {
-            inner: SortableIndex::from_pairs(arr),
+            inner: SortableIndex::from_iter(arr),
+            term: None,
         }
+    }
+
+    fn set_term(&mut self, term: TermIndex) {
+        self.term = Some(term);
     }
 
     fn get_value(&self, position: u32) -> Option<FieldValue> {
@@ -222,29 +221,37 @@ impl StringIndex {
             });
         };
 
+        if let Some(term) = self.term.as_mut() {
+            term.put(&value, position);
+        }
+
         self.inner.put(value, position);
 
         Ok(())
     }
 
-    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        let Some(value) = value.as_string() else {
-            return Err(IndexError::UnexpectedValue {
-                expected_type: TypeName::String,
-            });
-        };
+    fn remove_item(&mut self, position: u32) {
+        if let Some(term) = self.term.as_mut() {
+            term.remove_item(&position);
+        }
 
-        self.inner.remove(value, position);
-
-        Ok(())
+        self.inner.remove_item(position);
     }
 
     fn plus(&mut self, other: &StringIndex) {
-        self.inner.plus(&other.inner)
+        self.inner.plus(&other.inner);
+
+        if let (Some(term), Some(other)) = (self.term.as_mut(), other.term.as_ref()) {
+            term.plus(other)
+        }
     }
 
     fn minus(&mut self, other: &StringIndex) {
-        self.inner.minus(&other.inner)
+        self.inner.minus(&other.inner);
+
+        if let (Some(term), Some(other)) = (self.term.as_mut(), other.term.as_ref()) {
+            term.minus(other)
+        }
     }
 
     fn counts(&self, items: &RoaringBitmap) -> BTreeMap<String, u64> {
@@ -284,6 +291,21 @@ impl FilterableIndex for StringIndex {
             type_name: TypeName::String,
         })
     }
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(term) = self.term.as_ref() else {
+            return Err(FilterError::MissingTermIndex);
+        };
+
+        let Some(string_value) = value.as_string() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Contains,
+                type_name: TypeName::String,
+            });
+        };
+
+        Ok(term.contains(string_value))
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -296,9 +318,9 @@ impl NumericIndex {
         Self::default()
     }
 
-    fn from_pairs<const N: usize>(arr: [(OrderedFloat<f64>, RoaringBitmap); N]) -> Self {
+    fn from_iter<const N: usize>(arr: [(OrderedFloat<f64>, RoaringBitmap); N]) -> Self {
         NumericIndex {
-            inner: SortableIndex::from_pairs(arr),
+            inner: SortableIndex::from_iter(arr),
         }
     }
 
@@ -320,18 +342,6 @@ impl NumericIndex {
         };
 
         self.inner.put(value, position);
-
-        Ok(())
-    }
-
-    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        let Some(value) = value.as_decimal() else {
-            return Err(IndexError::UnexpectedValue {
-                expected_type: TypeName::Numeric,
-            });
-        };
-
-        self.inner.remove(value, position);
 
         Ok(())
     }
@@ -395,6 +405,10 @@ impl FilterableIndex for NumericIndex {
 
         Ok(matches)
     }
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -407,9 +421,9 @@ impl DateIndex {
         Self::default()
     }
 
-    fn from_pairs<const N: usize>(arr: [(i64, RoaringBitmap); N]) -> Self {
+    fn from_iter<const N: usize>(arr: [(i64, RoaringBitmap); N]) -> Self {
         DateIndex {
-            inner: SortableIndex::from_pairs(arr),
+            inner: SortableIndex::from_iter(arr),
         }
     }
 
@@ -442,18 +456,6 @@ impl DateIndex {
         };
 
         self.inner.put(value, position);
-
-        Ok(())
-    }
-
-    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        let Some(value) = DateIndex::parse_value(value) else {
-            return Err(IndexError::UnexpectedValue {
-                expected_type: TypeName::Date,
-            });
-        };
-
-        self.inner.remove(&value, position);
 
         Ok(())
     }
@@ -507,6 +509,10 @@ impl FilterableIndex for DateIndex {
 
         Ok(matches)
     }
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -523,13 +529,13 @@ impl EnumIndex {
         }
     }
 
-    fn from_pairs<const N: usize>(
+    fn from_iter<const N: usize>(
         values: IndexSet<String>,
         arr: [(usize, RoaringBitmap); N],
     ) -> Self {
         EnumIndex {
             values,
-            inner: SortableIndex::from_pairs(arr),
+            inner: SortableIndex::from_iter(arr),
         }
     }
 
@@ -554,24 +560,6 @@ impl EnumIndex {
         };
 
         self.inner.put(index, position);
-
-        Ok(())
-    }
-
-    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        let Some(value) = value.as_string() else {
-            return Err(IndexError::UnexpectedValue {
-                expected_type: TypeName::String,
-            });
-        };
-
-        let Some(index) = self.values.get_index_of(value) else {
-            return Err(IndexError::UnknownEnumValue {
-                value: value.clone(),
-            });
-        };
-
-        self.inner.remove(&index, position);
 
         Ok(())
     }
@@ -629,6 +617,10 @@ impl FilterableIndex for EnumIndex {
     ) -> Result<RoaringBitmap, FilterError> {
         panic!("Unsupported filter operation \"between\" for enum index")
     }
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -643,9 +635,9 @@ impl BoolIndex {
         }
     }
 
-    fn from_pairs<const N: usize>(arr: [(bool, RoaringBitmap); N]) -> Self {
+    fn from_iter<const N: usize>(arr: [(bool, RoaringBitmap); N]) -> Self {
         BoolIndex {
-            inner: SortableIndex::from_pairs(arr),
+            inner: SortableIndex::from_iter(arr),
         }
     }
 
@@ -663,18 +655,6 @@ impl BoolIndex {
         };
 
         self.inner.put(value, position);
-
-        Ok(())
-    }
-
-    fn remove(&mut self, value: &FieldValue, position: u32) -> Result<(), IndexError> {
-        let Some(value) = value.as_bool() else {
-            return Err(IndexError::UnexpectedValue {
-                expected_type: TypeName::Bool,
-            });
-        };
-
-        self.inner.remove(value, position);
 
         Ok(())
     }
@@ -721,13 +701,17 @@ impl FilterableIndex for BoolIndex {
     ) -> Result<RoaringBitmap, FilterError> {
         panic!("Unsupported filter operation \"between\" for bool index")
     }
+
+    fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SortableIndex<T: Ord>(BTreeMap<T, RoaringBitmap>);
 
 impl<T: Ord + Clone> SortableIndex<T> {
-    fn from_pairs<const N: usize>(arr: [(T, RoaringBitmap); N]) -> Self {
+    fn from_iter<const N: usize>(arr: [(T, RoaringBitmap); N]) -> Self {
         SortableIndex(BTreeMap::from(arr))
     }
 
@@ -791,12 +775,6 @@ impl<T: Ord + Clone> SortableIndex<T> {
         bitmap.insert(position);
     }
 
-    fn remove(&mut self, key: &T, position: u32) {
-        if let Some(bitmap) = self.0.get_mut(key) {
-            bitmap.remove(position);
-        }
-    }
-
     fn plus(&mut self, other: &SortableIndex<T>) {
         for (key, right) in &other.0 {
             if let Some(left) = self.0.get_mut(key) {
@@ -822,7 +800,39 @@ impl<T: Ord + Clone> SortableIndex<T> {
     }
 }
 
-type TermPositions = HashMap<u32, HashSet<usize>>;
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct TermPositions(HashMap<u32, HashSet<usize>>);
+
+impl TermPositions {
+    fn plus(&mut self, other: &TermPositions) {
+        for (other_position, other_indices) in &other.0 {
+            self.0
+                .entry(*other_position)
+                .and_modify(|indices| indices.extend(other_indices))
+                .or_insert_with(|| other_indices.clone());
+        }
+    }
+
+    fn minus(&mut self, other: &TermPositions) {
+        for (other_position, other_indices) in &other.0 {
+            if let Some(indices) = self.0.get_mut(other_position) {
+                for other_index in other_indices {
+                    indices.remove(other_index);
+                }
+
+                if indices.is_empty() {
+                    self.0.remove(other_position);
+                }
+            }
+        }
+    }
+}
+
+impl<const N: usize> From<[(u32, HashSet<usize>); N]> for TermPositions {
+    fn from(arr: [(u32, HashSet<usize>); N]) -> Self {
+        TermPositions(HashMap::from_iter(arr))
+    }
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TermIndex {
@@ -858,7 +868,7 @@ impl TermIndex {
             return hits;
         };
 
-        for position in term_positions.keys() {
+        for position in term_positions.0.keys() {
             hits.insert(*position);
         }
 
@@ -880,8 +890,8 @@ impl TermIndex {
 
             // For each matching word, refresh the consecutive matches so that only indices that
             // have their previous already present in the result are returned.
-            let mut appended_positions = HashSet::with_capacity(current_word_matches.len());
-            for (position, term_indices) in current_word_matches {
+            let mut appended_positions = HashSet::with_capacity(current_word_matches.0.len());
+            for (position, term_indices) in &current_word_matches.0 {
                 if let Some(previous_indices) = word_consecutive_matches.get_mut(position) {
                     // A document position has already been found, but no indices were stored.
                     // This is an invalid state, it should not happen.
@@ -915,6 +925,27 @@ impl TermIndex {
         RoaringBitmap::from_iter(word_consecutive_matches.keys())
     }
 
+    pub(crate) fn plus(&mut self, other: &TermIndex) {
+        for (other_word, other_positions) in &other.inner {
+            self.inner
+                .entry(other_word.clone())
+                .and_modify(|positions| positions.plus(other_positions))
+                .or_insert_with(|| other_positions.clone());
+        }
+    }
+
+    pub(crate) fn minus(&mut self, other: &TermIndex) {
+        for (other_word, other_positions) in &other.inner {
+            if let Some(term_positions) = self.inner.get_mut(other_word) {
+                term_positions.minus(other_positions);
+
+                if term_positions.0.is_empty() {
+                    self.inner.remove(other_word);
+                }
+            }
+        }
+    }
+
     /// Insert the content as words in the index for a given position
     pub(crate) fn put(&mut self, content: &str, position: u32) {
         for (term_index, word) in content
@@ -923,7 +954,7 @@ impl TermIndex {
             .enumerate()
         {
             let matches = self.inner.entry(word).or_default();
-            let terms = matches.entry(position).or_default();
+            let terms = matches.0.entry(position).or_default();
 
             terms.insert(term_index);
         }
@@ -931,10 +962,12 @@ impl TermIndex {
 
     /// Remove all the words for a given position. In case the given word has no results anymore,
     /// it will be emptied from the index.
-    pub(crate) fn remove(&mut self, position: &u32) {
+    pub(crate) fn remove_item(&mut self, position: &u32) {
         self.inner.retain(|_, term_positions| {
-            term_positions.retain(|term_position, _| term_position != position);
-            !term_positions.is_empty()
+            term_positions
+                .0
+                .retain(|term_position, _| term_position != position);
+            !term_positions.0.is_empty()
         })
     }
 
@@ -990,6 +1023,10 @@ pub enum IndexError {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum FilterError {
+    #[error("index is not present for field \"{0}\"")]
+    MissingIndex(String),
+    #[error("term index is not present for field")]
+    MissingTermIndex,
     #[error("Invalid filter value for filter \"{filter}\". Expected {type_name} value")]
     InvalidInput {
         filter: FilterName,
@@ -1015,12 +1052,12 @@ mod tests {
     #[test]
     fn index_plus() {
         // given
-        let mut left = Index::Numeric(NumericIndex::from_pairs([
+        let mut left = Index::Numeric(NumericIndex::from_iter([
             (1.0.into(), RoaringBitmap::from([0])),
             (2.0.into(), RoaringBitmap::from([1])),
         ]));
 
-        let right = Index::Numeric(NumericIndex::from_pairs([
+        let right = Index::Numeric(NumericIndex::from_iter([
             (1.0.into(), RoaringBitmap::from([1])),
             (3.0.into(), RoaringBitmap::from([2])),
         ]));
@@ -1031,7 +1068,7 @@ mod tests {
         // then
         assert_eq!(
             left,
-            Index::Numeric(NumericIndex::from_pairs([
+            Index::Numeric(NumericIndex::from_iter([
                 (1.0.into(), RoaringBitmap::from([0, 1])),
                 (2.0.into(), RoaringBitmap::from([1])),
                 (3.0.into(), RoaringBitmap::from([2]))
@@ -1042,12 +1079,12 @@ mod tests {
     #[test]
     fn index_minus() {
         // given
-        let mut left = Index::Numeric(NumericIndex::from_pairs([
+        let mut left = Index::Numeric(NumericIndex::from_iter([
             (1.0.into(), RoaringBitmap::from([0])),
             (2.0.into(), RoaringBitmap::from([1])),
         ]));
 
-        let right = Index::Numeric(NumericIndex::from_pairs([(
+        let right = Index::Numeric(NumericIndex::from_iter([(
             1.0.into(),
             RoaringBitmap::from([0, 1]),
         )]));
@@ -1058,7 +1095,7 @@ mod tests {
         // then
         assert_eq!(
             left,
-            Index::Numeric(NumericIndex::from_pairs([
+            Index::Numeric(NumericIndex::from_iter([
                 (1.0.into(), RoaringBitmap::from([])),
                 (2.0.into(), RoaringBitmap::from([1])),
             ]))
@@ -1141,6 +1178,7 @@ mod tests {
         // when
         assert_eq!(index.contains("very"), RoaringBitmap::from([1, 2]));
         assert_eq!(index.contains("document"), RoaringBitmap::from([1]));
+        assert_eq!(index.contains("this"), RoaringBitmap::from([1]));
         assert_eq!(index.contains("foo"), RoaringBitmap::new());
     }
 
@@ -1182,7 +1220,7 @@ mod tests {
         index.put("Another very important goal.", 2);
 
         // when
-        index.remove(&1);
+        index.remove_item(&1);
 
         // then
         assert_eq!(
@@ -1194,5 +1232,132 @@ mod tests {
                 ("goal", [(2, [3].into())].into()),
             ])
         );
+    }
+
+    #[test]
+    fn term_index_plus_partial() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+
+        let mut other = TermIndex::new();
+        other.put("This is another very important document.", 2);
+
+        // when
+        index.plus(&other);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("this", [(1, [0].into()), (2, [0].into())].into()),
+                ("is", [(1, [1].into()), (2, [1].into())].into()),
+                ("a", [(1, [2, 7].into())].into()),
+                ("another", [(2, [2].into())].into()),
+                ("very", [(1, [3, 8].into()), (2, [3].into())].into(),),
+                ("important", [(1, [4, 9].into()), (2, [4].into())].into(),),
+                ("document", [(1, [5].into()), (2, [5].into())].into()),
+                ("for", [(1, [6].into())].into()),
+                ("goal", [(1, [10].into())].into())
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_plus_full() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+
+        let mut other = TermIndex::new();
+        other.put("No conflicting words with the other term.", 2);
+
+        // when
+        index.plus(&other);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("this", [(1, [0].into())].into()),
+                ("is", [(1, [1].into())].into()),
+                ("a", [(1, [2, 7].into())].into()),
+                ("very", [(1, [3, 8].into())].into(),),
+                ("important", [(1, [4, 9].into())].into(),),
+                ("document", [(1, [5].into())].into()),
+                ("for", [(1, [6].into())].into()),
+                ("goal", [(1, [10].into())].into()),
+                ("no", [(2, [0].into())].into()),
+                ("conflicting", [(2, [1].into())].into()),
+                ("words", [(2, [2].into())].into()),
+                ("with", [(2, [3].into())].into()),
+                ("the", [(2, [4].into())].into()),
+                ("other", [(2, [5].into())].into()),
+                ("term", [(2, [6].into())].into())
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_minus_partial() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        index.put("This is another very important document.", 2);
+
+        let mut other = TermIndex::new();
+        other.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+
+        // when
+        index.minus(&other);
+
+        // then
+        assert_eq!(
+            index,
+            TermIndex::from_iter([
+                ("this", [(2, [0].into())].into()),
+                ("is", [(2, [1].into())].into()),
+                ("another", [(2, [2].into())].into()),
+                ("very", [(2, [3].into())].into(),),
+                ("important", [(2, [4].into())].into(),),
+                ("document", [(2, [5].into())].into())
+            ])
+        );
+    }
+
+    #[test]
+    fn term_index_minus_full() {
+        // given
+        let mut index = TermIndex::new();
+        index.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        index.put("This is another very important document.", 2);
+
+        let mut other = TermIndex::new();
+        other.put(
+            "This is a very important document for a very important goal.",
+            1,
+        );
+        other.put("This is another very important document.", 2);
+
+        // when
+        index.minus(&other);
+
+        // then
+        assert_eq!(index, TermIndex::new());
     }
 }

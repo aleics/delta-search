@@ -101,7 +101,9 @@ impl QueryIndices {
             }
             CompositeFilter::Single(filter) => {
                 let Some(index) = self.get(&filter.name) else {
-                    return Err(QueryError::MissingIndex(filter.name.to_string()));
+                    return Err(QueryError::Filter(FilterError::MissingIndex(
+                        filter.name.to_string(),
+                    )));
                 };
 
                 let hits = index.filter(&filter.operation)?;
@@ -116,7 +118,7 @@ impl QueryIndices {
     fn execute_sort(&self, items: &RoaringBitmap, sort: &Sort) -> Result<Vec<u32>, QueryError> {
         let index = self
             .get(&sort.by)
-            .ok_or_else(|| QueryError::MissingIndex(sort.by.to_string()))?;
+            .ok_or_else(|| QueryError::Filter(FilterError::MissingIndex(sort.by.to_string())))?;
 
         Ok(index.sort(items, &sort.direction))
     }
@@ -472,6 +474,7 @@ pub enum FilterOperation {
     GreaterOrEqual(FieldValue),
     LessThan(FieldValue),
     LessThanOrEqual(FieldValue),
+    Contains(FieldValue),
 }
 
 #[derive(Clone, Debug)]
@@ -482,6 +485,7 @@ pub enum FilterName {
     GreaterOrEqual,
     LessThan,
     LessThanOrEqual,
+    Contains,
 }
 
 impl Display for FilterName {
@@ -493,6 +497,7 @@ impl Display for FilterName {
             FilterName::GreaterOrEqual => write!(f, "greater or equal than"),
             FilterName::LessThan => write!(f, "less than"),
             FilterName::LessThanOrEqual => write!(f, "less than or equal"),
+            FilterName::Contains => write!(f, "contains"),
         }
     }
 }
@@ -874,8 +879,6 @@ impl QueryParser {
 #[derive(Error, Debug)]
 #[non_exhaustive]
 pub enum QueryError {
-    #[error("index is not present for field \"{0}\"")]
-    MissingIndex(String),
     #[error(transparent)]
     Filter(#[from] FilterError),
     #[error(transparent)]
