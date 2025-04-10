@@ -47,6 +47,7 @@ trait FilterableIndex {
                 self.between(Bound::Unbounded, Bound::Included(value))
             }
             FilterOperation::Contains(value) => self.contains(value),
+            FilterOperation::Matches(value) => self.matches(value),
         }
     }
 
@@ -59,6 +60,8 @@ trait FilterableIndex {
     ) -> Result<RoaringBitmap, FilterError>;
 
     fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError>;
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -320,6 +323,21 @@ impl FilterableIndex for StringIndex {
 
         Ok(term.contains(string_value))
     }
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        let Some(term) = self.term.as_ref() else {
+            return Err(FilterError::MissingTermIndex);
+        };
+
+        let Some(string_value) = value.as_string() else {
+            return Err(FilterError::InvalidInput {
+                filter: FilterName::Contains,
+                type_name: TypeName::String,
+            });
+        };
+
+        Ok(term.match_phrase(string_value))
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -421,6 +439,10 @@ impl FilterableIndex for NumericIndex {
     }
 
     fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
         self.equal(value)
     }
 }
@@ -525,6 +547,10 @@ impl FilterableIndex for DateIndex {
     }
 
     fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
         self.equal(value)
     }
 }
@@ -635,6 +661,10 @@ impl FilterableIndex for EnumIndex {
     fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
         self.equal(value)
     }
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -717,6 +747,10 @@ impl FilterableIndex for BoolIndex {
     }
 
     fn contains(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
+        self.equal(value)
+    }
+
+    fn matches(&self, value: &FieldValue) -> Result<RoaringBitmap, FilterError> {
         self.equal(value)
     }
 }

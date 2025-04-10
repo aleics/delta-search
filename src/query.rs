@@ -360,6 +360,13 @@ impl CompositeFilter {
         })
     }
 
+    pub fn matches(name: &str, value: FieldValue) -> Self {
+        CompositeFilter::Single(Filter {
+            name: name.to_string(),
+            operation: FilterOperation::Matches(value),
+        })
+    }
+
     pub fn or(filters: Vec<CompositeFilter>) -> Self {
         CompositeFilter::Or(filters)
     }
@@ -482,6 +489,7 @@ pub enum FilterOperation {
     LessThan(FieldValue),
     LessThanOrEqual(FieldValue),
     Contains(FieldValue),
+    Matches(FieldValue),
 }
 
 #[derive(Clone, Debug)]
@@ -560,7 +568,17 @@ pub(crate) struct ParsedQuery {
     gt_operator         = { ">" }
     lt_operator         = { "<" }
     contains_operator   = { ^"CONTAINS" }
-    comparison_operator = { eq_operator | not_eq_operator | ge_operator | le_operator | gt_operator | lt_operator | contains_operator }
+    match_operator      = { ^"MATCH" }
+    comparison_operator = {
+        eq_operator
+        | not_eq_operator
+        | ge_operator
+        | le_operator
+        | gt_operator
+        | lt_operator
+        | contains_operator
+        | match_operator
+    }
     logical_operator    = { ^"AND" | ^"OR" }
 
     ASC  = { ^"ASC" }
@@ -769,6 +787,7 @@ impl QueryParser {
             | Rule::gt_operator
             | Rule::lt_operator
             | Rule::contains_operator
+            | Rule::match_operator
             | Rule::logical_operator
             | Rule::FROM
             | Rule::WHERE
@@ -819,6 +838,7 @@ impl QueryParser {
                         Rule::gt_operator => Ok(CompositeFilter::gt(name, value)),
                         Rule::lt_operator => Ok(CompositeFilter::lt(name, value)),
                         Rule::contains_operator => Ok(CompositeFilter::contains(name, value)),
+                        Rule::match_operator => Ok(CompositeFilter::matches(name, value)),
                         _ => Err(ParseError::UnknownOperator),
                     }
                 } else {
@@ -870,6 +890,7 @@ impl QueryParser {
             | Rule::gt_operator
             | Rule::lt_operator
             | Rule::contains_operator
+            | Rule::match_operator
             | Rule::logical_operator
             | Rule::statement
             | Rule::composite
@@ -1054,6 +1075,30 @@ mod tests {
                 filter: Some(CompositeFilter::contains(
                     "person.name",
                     FieldValue::str("Alice")
+                )),
+                sort: None,
+                scope: None,
+                pagination: Pagination::default()
+            }
+        )
+    }
+
+    #[test]
+    fn creates_match_filter() {
+        // given
+        let input = "FROM person WHERE person.name MATCH \"Alice Bob\"";
+
+        // when
+        let result = QueryParser::parse_query(input).unwrap();
+
+        // then
+        assert_eq!(
+            result,
+            ParsedQuery {
+                entity: "person".to_string(),
+                filter: Some(CompositeFilter::matches(
+                    "person.name",
+                    FieldValue::str("Alice Bob")
                 )),
                 sort: None,
                 scope: None,
@@ -1297,7 +1342,7 @@ mod tests {
         // given
         let input = r#"
             FROM person
-                WHERE person.name = "David" OR person.address CONTAINS "Street"
+                WHERE person.name = "David" OR person.address CONTAINS "Street" OR person.description MATCH "nice person"
                 BRANCH 1 AS OF "2020-01-01"
                 ORDER BY person.score
                 LIMIT 20
@@ -1314,7 +1359,13 @@ mod tests {
                 entity: "person".to_string(),
                 filter: Some(CompositeFilter::or(vec![
                     CompositeFilter::eq("person.name", FieldValue::str("David")),
-                    CompositeFilter::contains("person.address", FieldValue::str("Street"))
+                    CompositeFilter::or(vec![
+                        CompositeFilter::contains("person.address", FieldValue::str("Street")),
+                        CompositeFilter::matches(
+                            "person.description",
+                            FieldValue::str("nice person")
+                        )
+                    ])
                 ])),
                 sort: Some(Sort::new("person.score").with_direction(SortDirection::ASC)),
                 scope: Some(DeltaScope {

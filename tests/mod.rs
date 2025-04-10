@@ -26,7 +26,7 @@ mod integration_tests {
         executes_query(entity_name).await;
 
         // executes term query
-        executes_query(entity_name).await;
+        executes_term_query(entity_name).await;
 
         // adds deltas
         adds_deltas(entity_name).await;
@@ -269,6 +269,58 @@ mod integration_tests {
                                 "name": "Cristiano Ronaldo",
                                 "score": 8.7,
                                 "sport": "Football"
+                            }
+                        }
+                    ]
+                }"#
+            )
+        );
+    }
+
+    async fn executes_term_query(name: &str) {
+        // given
+        let payload = format!(
+            r#"{{
+                "query": "FROM {name} WHERE name CONTAINS \"Lionel\" OR name MATCH \"Michael Jordan\" ORDER BY score DESC LIMIT 10"
+            }}"#
+        );
+
+        // when
+        let response = Client::new()
+            .post("http://127.0.0.1:3000/search")
+            .header("Content-Type", "application/json")
+            .body(payload)
+            .send()
+            .await
+            .unwrap();
+
+        // then
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response_body = response.text().await.unwrap();
+        assert_eq!(
+            normalize(&response_body),
+            normalize(
+                r#"{
+                    "data": [
+                        {
+                            "id": 1,
+                            "fields": {
+                                "active": true,
+                                "birth_date": "1987-06-24",
+                                "name": "Lionel Messi",
+                                "score": 9.5,
+                                "sport": "Football"
+                            }
+                        },
+                        {
+                            "id": 0,
+                            "fields": {
+                                "active": false,
+                                "birth_date": "1963-02-17",
+                                "name": "Michael Jordan",
+                                "score": 9,
+                                "sport": "Basketball"
                             }
                         }
                     ]
